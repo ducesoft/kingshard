@@ -17,6 +17,7 @@ package mysql
 import (
 	"bufio"
 	"fmt"
+	"github.com/flike/kingshard/core/errors"
 	"io"
 	"net"
 )
@@ -43,79 +44,108 @@ func NewPacketIO(conn net.Conn) *PacketIO {
 	return p
 }
 
-func (p *PacketIO) ReadPacket() ([]byte, error) {
-	header := []byte{0, 0, 0, 0}
-
-	if _, err := io.ReadFull(p.rb, header); err != nil {
-		return nil, ErrBadConn
-	}
-
-	length := int(uint32(header[0]) | uint32(header[1])<<8 | uint32(header[2])<<16)
-	if length < 1 {
-		return nil, fmt.Errorf("invalid payload length %d", length)
-	}
-
-	sequence := uint8(header[3])
-
-	if sequence != p.Sequence {
-		return nil, fmt.Errorf("invalid sequence %d != %d", sequence, p.Sequence)
-	}
-
-	p.Sequence++
-
+func (p *PacketIO) ReadPacketWithLen(length int) ([]byte, error) {
 	data := make([]byte, length)
-	if _, err := io.ReadFull(p.rb, data); err != nil {
-		return nil, ErrBadConn
-	} else {
-		if length < MaxPayloadLen {
-			return data, nil
-		}
+	bufLen := p.rb.Size()
 
-		var buf []byte
-		buf, err = p.ReadPacket()
+	for i := 0; i < length && i < bufLen; i++ {
+		oneByte, err := p.rb.ReadByte()
+		// length is always lt bufLen, so err occurs, we just break
+		if err != nil {
+			break
+		}
+		data[i] = oneByte
+	}
+	return data, nil
+}
+
+func (p *PacketIO) ReadPacket() ([]byte, error) {
+	var prevData []byte
+	for {
+		// read packet header
+		data, err := p.ReadPacketWithLen(4)
 		if err != nil {
 			return nil, ErrBadConn
-		} else {
-			return append(data, buf...), nil
 		}
+
+		// packet length [24 bit]
+		pktLen := int(uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16)
+
+		// check packet sync [8 bit]
+		if data[3] != p.Sequence {
+			return nil, fmt.Errorf("invalid sequence %d != %d", data[3], p.Sequence)
+		}
+		p.Sequence++
+
+		// packets with length 0 terminate a previous packet which is a
+		// multiple of (2^24)-1 bytes long
+		if pktLen == 0 {
+			// there was no previous packet
+			if prevData == nil {
+				return nil, errors.ErrInvalidConn
+			}
+
+			return prevData, nil
+		}
+
+		// read packet body [pktLen bytes]
+		data, err = p.ReadPacketWithLen(pktLen)
+		if err != nil {
+			return nil, errors.ErrInvalidConn
+		}
+
+		// return data if this was the last packet
+		if pktLen < MaxPayloadLen {
+			// zero allocations for non-split packets
+			if prevData == nil {
+				return data, nil
+			}
+			return append(prevData, data...), nil
+		}
+		prevData = append(prevData, data...)
 	}
 }
 
-//data already have header
+//WritePacket data already have header
 func (p *PacketIO) WritePacket(data []byte) error {
-	length := len(data) - 4
+	pktLen := len(data) - 4
 
-	for length >= MaxPayloadLen {
-
-		data[0] = 0xff
-		data[1] = 0xff
-		data[2] = 0xff
-
+	for {
+		var size int
+		if pktLen >= MaxPayloadLen {
+			data[0] = 0xff
+			data[1] = 0xff
+			data[2] = 0xff
+			size = MaxPayloadLen
+		} else {
+			data[0] = byte(pktLen)
+			data[1] = byte(pktLen >> 8)
+			data[2] = byte(pktLen >> 16)
+			size = pktLen
+		}
 		data[3] = p.Sequence
 
-		if n, err := p.wb.Write(data[:4+MaxPayloadLen]); err != nil {
-			return ErrBadConn
-		} else if n != (4 + MaxPayloadLen) {
-			return ErrBadConn
-		} else {
+		n, err := p.wb.Write(data[:4+size])
+		if err == nil && n == size+4 {
 			p.Sequence++
-			length -= MaxPayloadLen
-			data = data[MaxPayloadLen:]
+			if size != MaxPayloadLen {
+				return nil
+			}
+			pktLen -= size
+			data = data[size:]
+			continue
 		}
-	}
-
-	data[0] = byte(length)
-	data[1] = byte(length >> 8)
-	data[2] = byte(length >> 16)
-	data[3] = p.Sequence
-
-	if n, err := p.wb.Write(data); err != nil {
-		return ErrBadConn
-	} else if n != len(data) {
-		return ErrBadConn
-	} else {
-		p.Sequence++
-		return nil
+		// Handle error
+		if err == nil { // n != len(data)
+			print(errors.ErrMalformPkt)
+		} else {
+			if n == 0 && pktLen == len(data)-4 {
+				// only for the first loop iteration when nothing was written yet
+				return ErrBadConn
+			}
+			print(err)
+		}
+		return errors.ErrInvalidConn
 	}
 }
 

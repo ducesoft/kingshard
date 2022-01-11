@@ -16,7 +16,10 @@ package backend
 
 import (
 	"bytes"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/binary"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -51,6 +54,9 @@ type Conn struct {
 
 	pushTimestamp int64
 	pkgErr        error
+
+	network string
+	pubkey  *rsa.PublicKey
 }
 
 func (c *Conn) Connect(addr string, user string, password string, db string) error {
@@ -81,6 +87,7 @@ func (c *Conn) ReConnect() error {
 		return err
 	}
 
+	c.network = n
 	tcpConn := netConn.(*net.TCPConn)
 
 	//SetNoDelay controls whether the operating system should delay packet transmission
@@ -93,20 +100,24 @@ func (c *Conn) ReConnect() error {
 	c.conn = tcpConn
 	c.pkg = mysql.NewPacketIO(tcpConn)
 
-	if err := c.readInitialHandshake(); err != nil {
+	authData, plugin, err := c.readInitialHandshake()
+	c.salt = authData
+	if err != nil {
 		c.conn.Close()
 		return err
 	}
 
-	if err := c.writeAuthHandshake(); err != nil {
+	// set default
+	if plugin == "" {
+		plugin = mysql.AUTH_NAME
+	}
+	if err := c.writeAuthHandshake(plugin); err != nil {
 		c.conn.Close()
-
 		return err
 	}
 
-	if _, err := c.readOK(); err != nil {
+	if _, _, err := c.readOK(); err != nil {
 		c.conn.Close()
-
 		return err
 	}
 
@@ -114,7 +125,6 @@ func (c *Conn) ReConnect() error {
 	if !c.IsAutoCommit() {
 		if _, err := c.exec("set autocommit = 1"); err != nil {
 			c.conn.Close()
-
 			return err
 		}
 	}
@@ -145,18 +155,18 @@ func (c *Conn) writePacket(data []byte) error {
 	return err
 }
 
-func (c *Conn) readInitialHandshake() error {
-	data, err := c.readPacket()
+func (c *Conn) readInitialHandshake() (data []byte, plugin string, err error) {
+	data, err = c.readPacket()
 	if err != nil {
-		return err
+		return
 	}
 
 	if data[0] == mysql.ERR_HEADER {
-		return errors.New("read initial handshake error")
+		return nil, "", mysql.ErrReadInitHandshake
 	}
 
 	if data[0] < mysql.MinProtocolVersion {
-		return fmt.Errorf("invalid protocol version %d, must >= 10", data[0])
+		return nil, "", fmt.Errorf("invalid protocol version %d, must >= 10", data[0])
 	}
 
 	//skip mysql version and connection id
@@ -164,7 +174,7 @@ func (c *Conn) readInitialHandshake() error {
 	//connection id length is 4
 	pos := 1 + bytes.IndexByte(data[1:], 0x00) + 1 + 4
 
-	c.salt = append(c.salt, data[pos:pos+8]...)
+	authData := data[pos : pos+8]
 
 	//skip filter
 	pos += 8 + 1
@@ -194,43 +204,76 @@ func (c *Conn) readInitialHandshake() error {
 		// The official Python library uses the fixed length 12
 		// mysql-proxy also use 12
 		// which is not documented but seems to work.
-		c.salt = append(c.salt, data[pos:pos+12]...)
+		//c.salt = append(c.salt, data[pos:pos+12]...)
+		authData = append(authData, data[pos:pos+12]...)
+		pos += 13
+
+		// EOF if version (>= 5.5.7 and < 5.5.10) or (>= 5.6.0 and < 5.6.2)
+		// \NUL otherwise
+		if end := bytes.IndexByte(data[pos:], 0x00); end != -1 {
+			plugin = string(data[pos : pos+end])
+		} else {
+			plugin = string(data[pos:])
+		}
+
+		// make a memory safe copy of the cipher slice
+		var b [20]byte
+		copy(b[:], authData)
+		return b[:], plugin, nil
 	}
 
-	return nil
+	// make a memory safe copy of the cipher slice
+	var b [8]byte
+	copy(b[:], authData)
+	return b[:], plugin, nil
 }
 
-func (c *Conn) writeAuthHandshake() error {
+func (c *Conn) writeAuthHandshake(plugin string) error {
 	// Adjust client capability flags based on server support
 	capability := mysql.CLIENT_PROTOCOL_41 | mysql.CLIENT_SECURE_CONNECTION |
-		mysql.CLIENT_LONG_PASSWORD | mysql.CLIENT_TRANSACTIONS | mysql.CLIENT_LONG_FLAG
-
-	capability &= c.capability
+		mysql.CLIENT_LONG_PASSWORD | mysql.CLIENT_TRANSACTIONS | mysql.CLIENT_LOCAL_FILES |
+		mysql.CLIENT_PLUGIN_AUTH | mysql.CLIENT_MULTI_RESULTS | c.capability&mysql.CLIENT_LONG_FLAG
 
 	//packet length
 	//capbility 4
 	//max-packet size 4
 	//charset 1
 	//reserved all[0] 23
-	length := 4 + 4 + 1 + 23
-
 	//username
-	length += len(c.user) + 1
 
 	//we only support secure connection
-	auth := mysql.CalcPassword(c.salt, []byte(c.password))
+	authResp, err := mysql.Auth(c.salt, []byte(c.password), plugin)
+	if err != nil {
+		fmt.Printf("auth err:%s", err)
+		plugin = mysql.AUTH_NAME
+		authResp, err = mysql.Auth(c.salt, []byte(c.password), plugin)
+		if err != nil {
+			return err
+		}
+	}
 
-	length += 1 + len(auth)
+	var authRespLEIBuf [9]byte
+	authRespLEI := mysql.AppendLengthEncodedInteger(authRespLEIBuf[:0], uint64(len(authResp)))
+	if len(authRespLEI) > 1 {
+		// if the length can not be written in 1 byte, it must be written as a
+		// length encoded integer
+		capability |= mysql.CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA
+	}
 
-	if len(c.db) > 0 {
+	pktLen := 4 + 4 + 1 + 23 + len(c.user) + 1 + len(authRespLEI) + len(authResp) + 21 + 1
+
+	if n := len(c.db); n > 0 {
 		capability |= mysql.CLIENT_CONNECT_WITH_DB
-
-		length += len(c.db) + 1
+		pktLen += n + 1
 	}
 
 	c.capability = capability
-
-	data := make([]byte, length+4)
+	data, err := c.pkg.ReadPacketWithLen(pktLen + 4)
+	if err != nil {
+		// cannot take the buffer. Something must be wrong with the connection
+		fmt.Printf("read packet data err:%s", err)
+		return mysql.ErrBadConn
+	}
 
 	//capability [32 bit]
 	data[4] = byte(capability)
@@ -239,35 +282,69 @@ func (c *Conn) writeAuthHandshake() error {
 	data[7] = byte(capability >> 24)
 
 	//MaxPacketSize [32 bit] (none)
-	//data[8] = 0x00
-	//data[9] = 0x00
-	//data[10] = 0x00
-	//data[11] = 0x00
+	data[8] = 0x00
+	data[9] = 0x00
+	data[10] = 0x00
+	data[11] = 0x00
 
-	//Charset [1 byte]
+	// Charset [1 byte]
 	data[12] = byte(c.collation)
+	found := mysql.Collations[c.collation] != ""
+	if !found {
+		// Note possibility for false negatives:
+		// could be triggered  although the collation is valid if the
+		// collations map does not contain entries the server supports.
+		return mysql.ErrUnknownCollation
+	}
 
-	//Filler [23 bytes] (all 0x00)
-	pos := 13 + 23
+	// Filler [23 bytes] (all 0x00)
+	pos := 13
+	for ; pos < 13+23; pos++ {
+		data[pos] = 0
+	}
 
-	//User [null terminated string]
+	// SSL Connection Request Packet
+	// http://dev.mysql.com/doc/internals/en/connection-phase-packets.html#packet-Protocol::SSLRequest
+	/*if c.pkg != nil {
+		// Send TLS / SSL request packet
+		if err := c.writePacket(data[:(4+4+1+23)+4]); err != nil {
+			return err
+		}
+
+		// Switch to TLS
+		tlsConn := tls.Client(c.conn, mc.cfg.tls)
+		if err := tlsConn.Handshake(); err != nil {
+			return err
+		}
+		mc.rawConn = mc.netConn
+		mc.netConn = tlsConn
+		mc.buf.nc = tlsConn
+	}*/
+
+	// User [null terminated string]
 	if len(c.user) > 0 {
 		pos += copy(data[pos:], c.user)
 	}
-	//data[pos] = 0x00
+	data[pos] = 0x00
 	pos++
 
-	// auth [length encoded integer]
-	data[pos] = byte(len(auth))
-	pos += 1 + copy(data[pos+1:], auth)
+	// Auth Data [length encoded integer]
+	pos += copy(data[pos:], authRespLEI)
+	pos += copy(data[pos:], authResp)
 
-	// db [null terminated string]
+	// Databasename [null terminated string]
 	if len(c.db) > 0 {
 		pos += copy(data[pos:], c.db)
-		//data[pos] = 0x00
+		data[pos] = 0x00
+		pos++
 	}
 
-	return c.writePacket(data)
+	pos += copy(data[pos:], plugin)
+	data[pos] = 0x00
+	pos++
+
+	// Send Auth packet
+	return c.writePacket(data[:pos])
 }
 
 func (c *Conn) writeCommand(command byte) error {
@@ -346,7 +423,7 @@ func (c *Conn) Ping() error {
 		return err
 	}
 
-	if _, err := c.readOK(); err != nil {
+	if _, _, err := c.readOK(); err != nil {
 		return err
 	}
 
@@ -364,7 +441,7 @@ func (c *Conn) UseDB(dbName string) error {
 		return err
 	}
 
-	if _, err := c.readOK(); err != nil {
+	if _, _, err := c.readOK(); err != nil {
 		return err
 	}
 
@@ -679,19 +756,110 @@ func (c *Conn) handleErrorPacket(data []byte) error {
 	return e
 }
 
-func (c *Conn) readOK() (*mysql.Result, error) {
+func (c *Conn) readOK() (string, *mysql.Result, error) {
 	data, err := c.readPacket()
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
 	if data[0] == mysql.OK_HEADER {
-		return c.handleOKPacket(data)
-	} else if data[0] == mysql.ERR_HEADER {
-		return nil, c.handleErrorPacket(data)
+		ret, err := c.handleOKPacket(data)
+		return "", ret, err
+	} else if data[0] == mysql.OK_AUTH_MORE {
+		return "", nil, c.checkAuthResult(data[1:], "caching_sha2_password")
+	} else if data[0] == mysql.EOF_HEADER {
+		if len(data) == 1 {
+			// https://dev.mysql.com/doc/internals/en/connection-phase-packets.html#packet-Protocol::OldAuthSwitchRequest
+			return "mysql_old_password", nil, nil
+		}
+		pluginEndIndex := bytes.IndexByte(data, 0x00)
+		if pluginEndIndex < 0 {
+			return "", nil, mysql.ErrMalformPacket
+		}
+		plugin := string(data[1:pluginEndIndex])
+		authData := data[pluginEndIndex+1:]
+		fmt.Printf("authData:%s", authData)
+		return plugin, nil, nil
 	} else {
-		return nil, errors.New("invalid ok packet")
+		return "", nil, errors.New(string(data))
 	}
+}
+
+func (c *Conn) readResultOk() error {
+	data, err := c.pkg.ReadPacket()
+	if err != nil {
+		return err
+	}
+	if data[0] == mysql.OK_HEADER {
+		_, err1 := c.handleOKPacket(data)
+		return err1
+	}
+	return c.handleErrorPacket(data)
+}
+
+func (c *Conn) checkAuthResult(authData []byte, plugin string) error {
+	switch plugin {
+	case "caching_sha2_password":
+		switch len(authData) {
+		case 0:
+			return nil
+		case 1:
+			fmt.Printf("data[0]:%d", authData[0])
+			switch authData[0] {
+			case mysql.CachingSha2PasswordFastAuthSuccess:
+				if err := c.readResultOk(); err == nil {
+					return nil
+				}
+			case mysql.CachingSha2PasswordPerformFullAuthentication:
+				// not support tls
+				if c.network == "unix" {
+					err := c.writeAuthSwitchPacket(append([]byte(c.password), 0))
+					if err != nil {
+						return err
+					}
+				} else {
+					pubKey := c.pubkey
+					if pubKey == nil {
+						data := make([]byte, 5)
+						data[4] = mysql.CachingSha2PasswordRequestPublicKey
+						c.writePacket(data)
+						data, err := c.readPacket()
+						if err != nil {
+							return err
+						}
+						block, rest := pem.Decode(data[1:])
+						if block == nil {
+							return fmt.Errorf("No Pem data found, data: %s", rest)
+						}
+						pkix, err := x509.ParsePKIXPublicKey(block.Bytes)
+						if err != nil {
+							return err
+						}
+						pubKey = pkix.(*rsa.PublicKey)
+					}
+					err := c.sendEncryptedPassword(authData, pubKey)
+					if err != nil {
+						return err
+					}
+				}
+				return c.readResultOk()
+			default:
+				return errors.New("malformed packet")
+			}
+			break
+		default:
+			return errors.New("malformed packet")
+		}
+	}
+	return nil
+}
+
+func (c *Conn) sendEncryptedPassword(seed []byte, pub *rsa.PublicKey) error {
+	enc, err := mysql.EncryptPassword(c.password, seed, pub)
+	if err != nil {
+		return err
+	}
+	return c.writeAuthSwitchPacket(enc)
 }
 
 func (c *Conn) readResult(binary bool) (*mysql.Result, error) {
@@ -721,4 +889,13 @@ func (c *Conn) IsInTransaction() bool {
 
 func (c *Conn) GetCharset() string {
 	return c.charset
+}
+
+func (c *Conn) writeAuthSwitchPacket(authData []byte) error {
+	pktLen := 4 + len(authData)
+	data := make([]byte, pktLen)
+
+	// Add the auth data [EOF]
+	copy(data[4:], authData)
+	return c.writePacket(data)
 }

@@ -15,8 +15,12 @@
 package mysql
 
 import (
+	crand "crypto/rand"
+	"crypto/rsa"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -31,6 +35,49 @@ func Pstack() string {
 	return string(buf[0:n])
 }
 
+// CalcPasswordSha2 mysql 8 https://github.com/go-sql-driver/mysql/blob/master/auth.go
+func CalcPasswordSha2(scramble, password []byte) []byte {
+	if len(password) == 0 {
+		return nil
+	}
+
+	crypt := sha256.New()
+	crypt.Write(password)
+	msg1 := crypt.Sum(nil)
+
+	crypt.Reset()
+	crypt.Write(msg1)
+	msg1Hash := crypt.Sum(nil)
+
+	crypt.Reset()
+	crypt.Write(msg1Hash)
+	crypt.Write(scramble)
+	msg2 := crypt.Sum(nil)
+
+	for i := range msg1 {
+		msg1[i] ^= msg2[2]
+	}
+	return msg1
+}
+
+func Auth(authData []byte, password []byte, plugin string) ([]byte, error) {
+	switch plugin {
+	case "caching_sha2_password":
+		authResp := CalcPasswordSha2(authData, password)
+		return authResp, nil
+	case "mysql_native_password":
+		// https://dev.mysql.com/doc/internals/en/secure-password-authentication.html
+		// Native password authentication only need and will need 20-byte challenge.
+		authResp := CalcPassword(authData[:20], password)
+		return authResp, nil
+	default:
+		print("unknown auth plugin:", plugin)
+		return nil, errors.New("this authentication plugin is not supported")
+	}
+
+}
+
+// CalcPassword before mysql 8:default caching_sha2_password, NOT mysql_native_password
 func CalcPassword(scramble, password []byte) []byte {
 	if len(password) == 0 {
 		return nil
@@ -105,6 +152,33 @@ func LengthEncodedInt(b []byte) (num uint64, isNull bool, n int) {
 	num = uint64(b[0])
 	n = 1
 	return
+}
+
+func EncryptPassword(password string, seed []byte, pub *rsa.PublicKey) ([]byte, error) {
+	plain := make([]byte, len(password)+1)
+	copy(plain, password)
+	for i := range plain {
+		j := i % len(seed)
+		plain[i] ^= seed[j]
+	}
+	sha1 := sha1.New()
+	return rsa.EncryptOAEP(sha1, crand.Reader, pub, plain, nil)
+}
+
+// AppendLengthEncodedInteger encodes a uint64 value and appends it to the given bytes slice
+func AppendLengthEncodedInteger(b []byte, n uint64) []byte {
+	switch {
+	case n <= 250:
+		return append(b, byte(n))
+
+	case n <= 0xffff:
+		return append(b, 0xfc, byte(n), byte(n>>8))
+
+	case n <= 0xffffff:
+		return append(b, 0xfd, byte(n), byte(n>>8), byte(n>>16))
+	}
+	return append(b, 0xfe, byte(n), byte(n>>8), byte(n>>16), byte(n>>24),
+		byte(n>>32), byte(n>>40), byte(n>>48), byte(n>>56))
 }
 
 func PutLengthEncodedInt(n uint64) []byte {

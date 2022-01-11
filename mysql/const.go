@@ -15,14 +15,16 @@
 package mysql
 
 const (
-	MinProtocolVersion byte   = 10
-	MaxPayloadLen      int    = 1<<24 - 1
-	TimeFormat         string = "2006-01-02 15:04:05"
-	ServerVersion      string = "5.6.20-kingshard"
+	DefaultMaxAllowedPacket        = 4 << 20 // 4 MiB
+	MinProtocolVersion      byte   = 10
+	MaxPayloadLen           int    = 1<<24 - 1
+	TimeFormat              string = "2006-01-02 15:04:05"
+	ServerVersion           string = "5.6.20-kingshard"
 )
 
 const (
 	OK_HEADER          byte = 0x00
+	OK_AUTH_MORE       byte = 0x01
 	ERR_HEADER         byte = 0xff
 	EOF_HEADER         byte = 0xfe
 	LocalInFile_HEADER byte = 0xfb
@@ -230,4 +232,10 @@ var (
 		"@@autocommit":         struct{}{},
 		"@@session.autocommit": struct{}{},
 	}
+)
+
+const (
+	CachingSha2PasswordRequestPublicKey          = 2
+	CachingSha2PasswordFastAuthSuccess           = 3
+	CachingSha2PasswordPerformFullAuthentication = 4
 )

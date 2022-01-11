@@ -19,12 +19,17 @@ import (
 )
 
 var (
+	ErrInvalidConn   = errors.New("invalid connection")
+	ErrMalformPkt    = errors.New("malformed packet")
 	ErrNoMasterConn  = errors.New("no master connection")
 	ErrNoSlaveConn   = errors.New("no slave connection")
 	ErrNoDefaultNode = errors.New("no default node")
 	ErrNoMasterDB    = errors.New("no master database")
 	ErrNoSlaveDB     = errors.New("no slave database")
 	ErrNoDatabase    = errors.New("no database")
+	ErrPktSync       = errors.New("commands out of sync. You can't run this command now")
+	ErrPktSyncMul    = errors.New("commands out of sync. Did you run multiple statements at once?")
+	ErrPktTooLarge   = errors.New("packet for query is too large. Try adjusting the 'max_allowed_packet' variable on the server")
 
 	ErrMasterDown    = errors.New("master is down")
 	ErrSlaveDown     = errors.New("slave is down")
@@ -72,5 +77,5 @@ var (
 	ErrInsertTooComplex = errors.New("insert is too complex")
 	ErrSQLNULL          = errors.New("sql is null")
 
-	ErrInternalServer   = errors.New("internal server error")
+	ErrInternalServer = errors.New("internal server error")
 )

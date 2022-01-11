@@ -20,8 +20,10 @@ import (
 )
 
 var (
-	ErrBadConn       = errors.New("connection was bad")
-	ErrMalformPacket = errors.New("Malform packet error")
+	ErrBadConn           = errors.New("connection was bad")
+	ErrReadInitHandshake = errors.New("read initial handshake error")
+	ErrMalformPacket     = errors.New("Malform packet error")
+	ErrUnknownCollation  = errors.New("unknown collation")
 
 	ErrTxDone = errors.New("sql: Transaction has already been committed or rolled back")
 )
