@@ -268,11 +268,11 @@ func (c *Conn) writeAuthHandshake(plugin string) error {
 	}
 
 	c.capability = capability
-	data, err := c.pkg.ReadPacketWithLen(pktLen + 4)
+	data, err := c.pkg.ReadPacketWhileEasy(pktLen + 4)
 	if err != nil {
 		// cannot take the buffer. Something must be wrong with the connection
 		fmt.Printf("read packet data err:%s", err)
-		return mysql.ErrBadConn
+		return err
 	}
 
 	//capability [32 bit]
@@ -820,10 +820,14 @@ func (c *Conn) checkAuthResult(authData []byte, plugin string) error {
 				} else {
 					pubKey := c.pubkey
 					if pubKey == nil {
-						data := make([]byte, 5)
+						//data := make([]byte, 5)
+						data, err := c.pkg.ReadPacketWhileEasy(4 + 1)
+						if err != nil {
+							return err
+						}
 						data[4] = mysql.CachingSha2PasswordRequestPublicKey
 						c.writePacket(data)
-						data, err := c.readPacket()
+						data, err = c.readPacket()
 						if err != nil {
 							return err
 						}
@@ -893,8 +897,10 @@ func (c *Conn) GetCharset() string {
 
 func (c *Conn) writeAuthSwitchPacket(authData []byte) error {
 	pktLen := 4 + len(authData)
-	data := make([]byte, pktLen)
-
+	data, err := c.pkg.ReadPacketWhileEasy(pktLen)
+	if err != nil {
+		return mysql.ErrBusyBuffer
+	}
 	// Add the auth data [EOF]
 	copy(data[4:], authData)
 	return c.writePacket(data)

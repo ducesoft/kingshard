@@ -44,26 +44,25 @@ func NewPacketIO(conn net.Conn) *PacketIO {
 	return p
 }
 
-func (p *PacketIO) ReadPacketWithLen(length int) ([]byte, error) {
+func (p *PacketIO) readNext(length int) ([]byte, error) {
 	data := make([]byte, length)
-	bufLen := p.rb.Size()
+	_, err := p.rb.Read(data)
+	return data, err
+}
 
-	for i := 0; i < length && i < bufLen; i++ {
-		oneByte, err := p.rb.ReadByte()
-		// length is always lt bufLen, so err occurs, we just break
-		if err != nil {
-			break
-		}
-		data[i] = oneByte
+// ReadPacketWhileEasy 只有buffer为空时，才返回指定长度初始化的内容
+func (p *PacketIO) ReadPacketWhileEasy(length int) ([]byte, error) {
+	if p.rb.Size() > 0 {
+		return nil, ErrBusyBuffer
 	}
-	return data, nil
+	return make([]byte, length), nil
 }
 
 func (p *PacketIO) ReadPacket() ([]byte, error) {
 	var prevData []byte
 	for {
 		// read packet header
-		data, err := p.ReadPacketWithLen(4)
+		data, err := p.readNext(4)
 		if err != nil {
 			return nil, ErrBadConn
 		}
@@ -89,7 +88,7 @@ func (p *PacketIO) ReadPacket() ([]byte, error) {
 		}
 
 		// read packet body [pktLen bytes]
-		data, err = p.ReadPacketWithLen(pktLen)
+		data, err = p.readNext(pktLen)
 		if err != nil {
 			return nil, errors.ErrInvalidConn
 		}

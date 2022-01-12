@@ -20,6 +20,7 @@ import (
 )
 
 var (
+	ErrBusyBuffer        = errors.New("busy buffer")
 	ErrBadConn           = errors.New("connection was bad")
 	ErrReadInitHandshake = errors.New("read initial handshake error")
 	ErrMalformPacket     = errors.New("Malform packet error")
