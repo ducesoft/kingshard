@@ -198,6 +198,8 @@ func (db *DB) Ping() error {
 func (db *DB) newConn() (*Conn, error) {
 	// init with default
 	co := &Conn{
+		maxAllowedPacket: mysql.MaxPayloadLen,
+		maxWriteSize:     mysql.MaxPayloadLen - 1,
 		tls: &tls.Config{
 			InsecureSkipVerify: true,
 		},

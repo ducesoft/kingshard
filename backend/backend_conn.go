@@ -58,18 +58,21 @@ type Conn struct {
 
 	network                 string // tcp or unix
 	pubkey                  *rsa.PublicKey
-	allowAllFiles           bool        // Allow all files to be used with LOAD DATA LOCAL INFILE
-	allowCleartextPasswords bool        // Allows the cleartext client side plugin
-	allowNativePasswords    bool        // Allows the native password authentication method
-	allowOldPasswords       bool        // Allows the old insecure password method
-	checkConnLiveness       bool        // Check connections for liveness before using them
-	clientFoundRows         bool        // Return number of matching rows instead of rows changed
-	columnsWithAlias        bool        // Prepend table alias to column names
-	interpolateParams       bool        // Interpolate placeholders into query string
+	allowAllFiles           bool // Allow all files to be used with LOAD DATA LOCAL INFILE
+	allowCleartextPasswords bool // Allows the cleartext client side plugin
+	allowNativePasswords    bool // Allows the native password authentication method
+	allowOldPasswords       bool // Allows the old insecure password method
+	checkConnLiveness       bool // Check connections for liveness before using them
+	clientFoundRows         bool // Return number of matching rows instead of rows changed
+	columnsWithAlias        bool // Prepend table alias to column names
+	interpolateParams       bool // Interpolate placeholders into query string
+	maxAllowedPacket        int
+	maxWriteSize            int
 	multiStatements         bool        // Allow multiple statements in one query
 	parseTime               bool        // Parse time values to time.Time
 	rejectReadOnly          bool        // Reject read-only connections
 	tls                     *tls.Config // TLS configuration
+	tlsConfig               string      // TLS configuration name
 }
 
 func (c *Conn) Connect(addr string, user string, password string, db string) error {
@@ -207,6 +210,17 @@ func (c *Conn) readInitialHandshake() (data []byte, plugin string, err error) {
 
 	//capability lower 2 bytes
 	c.capability = uint32(binary.LittleEndian.Uint16(data[pos : pos+2]))
+	if c.capability&mysql.CLIENT_PROTOCOL_41 == 0 {
+		return nil, "", mysql.ErrOldProtocol
+	}
+
+	if c.capability&mysql.CLIENT_SSL == 0 && c.tls != nil {
+		if c.tlsConfig == "preferred" {
+			c.tls = nil
+		} else {
+			return nil, "", mysql.ErrNoTLS
+		}
+	}
 
 	pos += 2
 
@@ -256,9 +270,12 @@ func (c *Conn) readInitialHandshake() (data []byte, plugin string, err error) {
 
 func (c *Conn) writeAuthHandshake(authResp []byte, plugin string) error {
 	// Adjust client capability flags based on server support
+	/*capability := mysql.CLIENT_PROTOCOL_41 | mysql.CLIENT_SECURE_CONNECTION |
+	mysql.CLIENT_LONG_PASSWORD | mysql.CLIENT_TRANSACTIONS | mysql.CLIENT_LOCAL_FILES |
+	mysql.CLIENT_PLUGIN_AUTH | mysql.CLIENT_MULTI_RESULTS | c.capability&mysql.CLIENT_LONG_FLAG*/
 	capability := mysql.CLIENT_PROTOCOL_41 | mysql.CLIENT_SECURE_CONNECTION |
-		mysql.CLIENT_LONG_PASSWORD | mysql.CLIENT_TRANSACTIONS | mysql.CLIENT_LOCAL_FILES |
-		mysql.CLIENT_PLUGIN_AUTH | mysql.CLIENT_MULTI_RESULTS | c.capability&mysql.CLIENT_LONG_FLAG
+		mysql.CLIENT_LONG_PASSWORD | mysql.CLIENT_TRANSACTIONS | mysql.CLIENT_LONG_FLAG
+	capability &= c.capability
 
 	//packet length
 	//capbility 4

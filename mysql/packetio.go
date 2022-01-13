@@ -16,6 +16,7 @@ package mysql
 
 import (
 	"bufio"
+	"encoding/hex"
 	"fmt"
 	"github.com/flike/kingshard/core/errors"
 	"io"
@@ -55,7 +56,10 @@ func (p *PacketIO) ReadPacket() ([]byte, error) {
 	for {
 		// read packet header
 		data, err := p.readNext(4)
+		fmt.Printf("data,%d,%d,%d,%d\n", data[0], data[1], data[2], data[3])
 		if err != nil {
+			data, _ = io.ReadAll(p.rb)
+			fmt.Printf("hex:%s\n", hex.EncodeToString(data))
 			return nil, ErrBadConn
 		}
 
@@ -64,6 +68,9 @@ func (p *PacketIO) ReadPacket() ([]byte, error) {
 
 		// check packet sync [8 bit]
 		if data[3] != p.Sequence {
+			if data[3] > p.Sequence {
+				return nil, ErrPktSyncMul
+			}
 			return nil, fmt.Errorf("invalid sequence %d != %d", data[3], p.Sequence)
 		}
 		p.Sequence++

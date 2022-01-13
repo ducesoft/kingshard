@@ -234,9 +234,9 @@ func (c *Conn) auth(authData []byte, plugin string) ([]byte, error) {
 		return append([]byte(c.password), 0), nil
 
 	case "mysql_native_password":
-		/*if !mc.cfg.AllowNativePasswords {
-			return nil, ErrNativePassword
-		}*/
+		if !c.allowNativePasswords {
+			return nil, mysql.ErrNativePassword
+		}
 		// https://dev.mysql.com/doc/internals/en/secure-password-authentication.html
 		// Native password authentication only need and will need 20-byte challenge.
 		authResp := mysql.ScramblePassword(authData[:20], []byte(c.password))
