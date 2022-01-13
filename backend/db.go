@@ -15,6 +15,7 @@
 package backend
 
 import (
+	"crypto/tls"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -195,7 +196,12 @@ func (db *DB) Ping() error {
 }
 
 func (db *DB) newConn() (*Conn, error) {
-	co := new(Conn)
+	// init with default
+	co := &Conn{
+		tls: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+	}
 
 	if err := co.Connect(db.addr, db.user, db.password, db.db); err != nil {
 		return nil, err

@@ -20,7 +20,6 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -60,25 +59,8 @@ func CalcPasswordSha2(scramble, password []byte) []byte {
 	return msg1
 }
 
-func Auth(authData []byte, password []byte, plugin string) ([]byte, error) {
-	switch plugin {
-	case "caching_sha2_password":
-		authResp := CalcPasswordSha2(authData, password)
-		return authResp, nil
-	case "mysql_native_password":
-		// https://dev.mysql.com/doc/internals/en/secure-password-authentication.html
-		// Native password authentication only need and will need 20-byte challenge.
-		authResp := CalcPassword(authData[:20], password)
-		return authResp, nil
-	default:
-		print("unknown auth plugin:", plugin)
-		return nil, errors.New("this authentication plugin is not supported")
-	}
-
-}
-
-// CalcPassword before mysql 8:default caching_sha2_password, NOT mysql_native_password
-func CalcPassword(scramble, password []byte) []byte {
+// ScramblePassword Hash password using 4.1+ method (SHA1)
+func ScramblePassword(scramble, password []byte) []byte {
 	if len(password) == 0 {
 		return nil
 	}

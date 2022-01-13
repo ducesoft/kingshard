@@ -548,6 +548,23 @@ var CollationNames = map[string]CollationId{
 	"utf8mb4_vietnamese_ci":    247,
 }
 
+// A denylist of collations which is unsafe to interpolate parameters.
+// These multibyte encodings may contains 0x5c (`\`) in their trailing bytes.
+var unsafeCollations = map[string]bool{
+	"big5_chinese_ci":        true,
+	"sjis_japanese_ci":       true,
+	"gbk_chinese_ci":         true,
+	"big5_bin":               true,
+	"gb2312_bin":             true,
+	"gbk_bin":                true,
+	"sjis_bin":               true,
+	"cp932_japanese_ci":      true,
+	"cp932_bin":              true,
+	"gb18030_chinese_ci":     true,
+	"gb18030_bin":            true,
+	"gb18030_unicode_520_ci": true,
+}
+
 var (
 	DEFAULT_CHARSET                    = "utf8"
 	DEFAULT_COLLATION_ID   CollationId = 33

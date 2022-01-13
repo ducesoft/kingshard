@@ -50,14 +50,6 @@ func (p *PacketIO) readNext(length int) ([]byte, error) {
 	return data, err
 }
 
-// ReadPacketWhileEasy 只有buffer为空时，才返回指定长度初始化的内容
-func (p *PacketIO) ReadPacketWhileEasy(length int) ([]byte, error) {
-	if p.rb.Size() > 0 {
-		return nil, ErrBusyBuffer
-	}
-	return make([]byte, length), nil
-}
-
 func (p *PacketIO) ReadPacket() ([]byte, error) {
 	var prevData []byte
 	for {

@@ -237,7 +237,7 @@ func (c *ClientConn) readHandshakeResponse() error {
 	}
 
 	//check password
-	checkAuth := mysql.CalcPassword(c.salt, []byte(c.proxy.users[c.user]))
+	checkAuth := mysql.ScramblePassword(c.salt, []byte(c.proxy.users[c.user]))
 	if !bytes.Equal(auth, checkAuth) {
 		golog.Error("ClientConn", "readHandshakeResponse", "error", 0,
 			"auth", auth,

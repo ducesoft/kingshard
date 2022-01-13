@@ -14,6 +14,11 @@
 
 package mysql
 
+import (
+	"log"
+	"os"
+)
+
 const (
 	DefaultMaxAllowedPacket        = 4 << 20 // 4 MiB
 	MinProtocolVersion      byte   = 10
@@ -22,6 +27,13 @@ const (
 	ServerVersion           string = "5.6.20-kingshard"
 )
 
+// Logger is used to log critical error messages.
+type Logger interface {
+	Print(v ...interface{})
+}
+
+var ErrLog = Logger(log.New(os.Stderr, "[mysql] ", log.Ldate|log.Ltime|log.Lshortfile))
+
 const (
 	OK_HEADER          byte = 0x00
 	OK_AUTH_MORE       byte = 0x01
@@ -29,6 +41,9 @@ const (
 	EOF_HEADER         byte = 0xfe
 	LocalInFile_HEADER byte = 0xfb
 )
+
+// https://dev.mysql.com/doc/internals/en/capability-flags.html#packet-Protocol::CapabilityFlags
+type ClientFlag uint32
 
 const (
 	SERVER_STATUS_IN_TRANS             uint16 = 0x0001

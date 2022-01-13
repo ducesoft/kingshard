@@ -17,6 +17,7 @@ package backend
 import (
 	"bytes"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
 	"encoding/pem"
@@ -55,8 +56,20 @@ type Conn struct {
 	pushTimestamp int64
 	pkgErr        error
 
-	network string
-	pubkey  *rsa.PublicKey
+	network                 string // tcp or unix
+	pubkey                  *rsa.PublicKey
+	allowAllFiles           bool        // Allow all files to be used with LOAD DATA LOCAL INFILE
+	allowCleartextPasswords bool        // Allows the cleartext client side plugin
+	allowNativePasswords    bool        // Allows the native password authentication method
+	allowOldPasswords       bool        // Allows the old insecure password method
+	checkConnLiveness       bool        // Check connections for liveness before using them
+	clientFoundRows         bool        // Return number of matching rows instead of rows changed
+	columnsWithAlias        bool        // Prepend table alias to column names
+	interpolateParams       bool        // Interpolate placeholders into query string
+	multiStatements         bool        // Allow multiple statements in one query
+	parseTime               bool        // Parse time values to time.Time
+	rejectReadOnly          bool        // Reject read-only connections
+	tls                     *tls.Config // TLS configuration
 }
 
 func (c *Conn) Connect(addr string, user string, password string, db string) error {
@@ -111,12 +124,25 @@ func (c *Conn) ReConnect() error {
 	if plugin == "" {
 		plugin = mysql.AUTH_NAME
 	}
-	if err := c.writeAuthHandshake(plugin); err != nil {
+
+	// Send Client Authentication Packet
+	authResp, err := c.auth(authData, plugin)
+	if err != nil {
+		// try the default auth plugin, if using the requested plugin failed
+		mysql.ErrLog.Print("could not use requested auth plugin '"+plugin+"': ", err.Error())
+		plugin = mysql.AUTH_NAME
+		authResp, err = c.auth(authData, plugin)
+		if err != nil {
+			c.conn.Close()
+			return err
+		}
+	}
+
+	if err = c.writeAuthHandshake(authResp, plugin); err != nil {
 		c.conn.Close()
 		return err
 	}
-
-	if _, _, err := c.readOK(); err != nil {
+	if err = c.handleAuthResult(authData, plugin); err != nil {
 		c.conn.Close()
 		return err
 	}
@@ -228,7 +254,7 @@ func (c *Conn) readInitialHandshake() (data []byte, plugin string, err error) {
 	return b[:], plugin, nil
 }
 
-func (c *Conn) writeAuthHandshake(plugin string) error {
+func (c *Conn) writeAuthHandshake(authResp []byte, plugin string) error {
 	// Adjust client capability flags based on server support
 	capability := mysql.CLIENT_PROTOCOL_41 | mysql.CLIENT_SECURE_CONNECTION |
 		mysql.CLIENT_LONG_PASSWORD | mysql.CLIENT_TRANSACTIONS | mysql.CLIENT_LOCAL_FILES |
@@ -241,15 +267,16 @@ func (c *Conn) writeAuthHandshake(plugin string) error {
 	//reserved all[0] 23
 	//username
 
-	//we only support secure connection
-	authResp, err := mysql.Auth(c.salt, []byte(c.password), plugin)
-	if err != nil {
-		fmt.Printf("auth err:%s", err)
-		plugin = mysql.AUTH_NAME
-		authResp, err = mysql.Auth(c.salt, []byte(c.password), plugin)
-		if err != nil {
-			return err
-		}
+	if c.clientFoundRows {
+		capability |= mysql.CLIENT_FOUND_ROWS
+	}
+
+	if c.tls != nil {
+		capability |= mysql.CLIENT_SSL
+	}
+
+	if c.multiStatements {
+		capability |= mysql.CLIENT_MULTI_STATEMENTS
 	}
 
 	var authRespLEIBuf [9]byte
@@ -268,12 +295,7 @@ func (c *Conn) writeAuthHandshake(plugin string) error {
 	}
 
 	c.capability = capability
-	data, err := c.pkg.ReadPacketWhileEasy(pktLen + 4)
-	if err != nil {
-		// cannot take the buffer. Something must be wrong with the connection
-		fmt.Printf("read packet data err:%s", err)
-		return err
-	}
+	data := make([]byte, pktLen+4)
 
 	//capability [32 bit]
 	data[4] = byte(capability)
@@ -305,21 +327,19 @@ func (c *Conn) writeAuthHandshake(plugin string) error {
 
 	// SSL Connection Request Packet
 	// http://dev.mysql.com/doc/internals/en/connection-phase-packets.html#packet-Protocol::SSLRequest
-	/*if c.pkg != nil {
+	if c.pkg != nil {
 		// Send TLS / SSL request packet
 		if err := c.writePacket(data[:(4+4+1+23)+4]); err != nil {
 			return err
 		}
 
 		// Switch to TLS
-		tlsConn := tls.Client(c.conn, mc.cfg.tls)
+		tlsConn := tls.Client(c.conn, c.tls)
 		if err := tlsConn.Handshake(); err != nil {
 			return err
 		}
-		mc.rawConn = mc.netConn
-		mc.netConn = tlsConn
-		mc.buf.nc = tlsConn
-	}*/
+		c.conn = tlsConn
+	}
 
 	// User [null terminated string]
 	if len(c.user) > 0 {
@@ -804,7 +824,7 @@ func (c *Conn) checkAuthResult(authData []byte, plugin string) error {
 		case 0:
 			return nil
 		case 1:
-			fmt.Printf("data[0]:%d", authData[0])
+			fmt.Printf("data[0]:%d\n", authData[0])
 			switch authData[0] {
 			case mysql.CachingSha2PasswordFastAuthSuccess:
 				if err := c.readResultOk(); err == nil {
@@ -812,6 +832,7 @@ func (c *Conn) checkAuthResult(authData []byte, plugin string) error {
 				}
 			case mysql.CachingSha2PasswordPerformFullAuthentication:
 				// not support tls
+				fmt.Printf("network:%s\n", c.network)
 				if c.network == "unix" {
 					err := c.writeAuthSwitchPacket(append([]byte(c.password), 0))
 					if err != nil {
@@ -820,14 +841,14 @@ func (c *Conn) checkAuthResult(authData []byte, plugin string) error {
 				} else {
 					pubKey := c.pubkey
 					if pubKey == nil {
-						//data := make([]byte, 5)
-						data, err := c.pkg.ReadPacketWhileEasy(4 + 1)
-						if err != nil {
-							return err
-						}
+						var err error
+						data := make([]byte, 4+1)
 						data[4] = mysql.CachingSha2PasswordRequestPublicKey
 						c.writePacket(data)
+
+						// parse public key
 						data, err = c.readPacket()
+						fmt.Printf("data:%s\n", data)
 						if err != nil {
 							return err
 						}
@@ -856,14 +877,6 @@ func (c *Conn) checkAuthResult(authData []byte, plugin string) error {
 		}
 	}
 	return nil
-}
-
-func (c *Conn) sendEncryptedPassword(seed []byte, pub *rsa.PublicKey) error {
-	enc, err := mysql.EncryptPassword(c.password, seed, pub)
-	if err != nil {
-		return err
-	}
-	return c.writeAuthSwitchPacket(enc)
 }
 
 func (c *Conn) readResult(binary bool) (*mysql.Result, error) {
@@ -897,10 +910,7 @@ func (c *Conn) GetCharset() string {
 
 func (c *Conn) writeAuthSwitchPacket(authData []byte) error {
 	pktLen := 4 + len(authData)
-	data, err := c.pkg.ReadPacketWhileEasy(pktLen)
-	if err != nil {
-		return mysql.ErrBusyBuffer
-	}
+	data := make([]byte, pktLen)
 	// Add the auth data [EOF]
 	copy(data[4:], authData)
 	return c.writePacket(data)
