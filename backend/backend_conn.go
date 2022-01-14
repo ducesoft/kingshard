@@ -71,6 +71,7 @@ type Conn struct {
 	multiStatements         bool        // Allow multiple statements in one query
 	parseTime               bool        // Parse time values to time.Time
 	rejectReadOnly          bool        // Reject read-only connections
+	enableTls               bool        // enable tls default false only true tls and tlsConfig is active
 	tls                     *tls.Config // TLS configuration
 	tlsConfig               string      // TLS configuration name
 }
@@ -79,7 +80,7 @@ func (c *Conn) Connect(addr string, user string, password string, db string) err
 	c.addr = addr
 	c.user = user
 	c.password = password
-	c.db = db
+	c.db = "ks_db"
 
 	//use utf8
 	c.collation = mysql.DEFAULT_COLLATION_ID
@@ -270,11 +271,11 @@ func (c *Conn) readInitialHandshake() (data []byte, plugin string, err error) {
 
 func (c *Conn) writeAuthHandshake(authResp []byte, plugin string) error {
 	// Adjust client capability flags based on server support
-	/*capability := mysql.CLIENT_PROTOCOL_41 | mysql.CLIENT_SECURE_CONNECTION |
-	mysql.CLIENT_LONG_PASSWORD | mysql.CLIENT_TRANSACTIONS | mysql.CLIENT_LOCAL_FILES |
-	mysql.CLIENT_PLUGIN_AUTH | mysql.CLIENT_MULTI_RESULTS | c.capability&mysql.CLIENT_LONG_FLAG*/
 	capability := mysql.CLIENT_PROTOCOL_41 | mysql.CLIENT_SECURE_CONNECTION |
-		mysql.CLIENT_LONG_PASSWORD | mysql.CLIENT_TRANSACTIONS | mysql.CLIENT_LONG_FLAG
+		mysql.CLIENT_LONG_PASSWORD | mysql.CLIENT_TRANSACTIONS | mysql.CLIENT_LOCAL_FILES |
+		mysql.CLIENT_PLUGIN_AUTH | mysql.CLIENT_MULTI_RESULTS | c.capability&mysql.CLIENT_LONG_FLAG
+	/*capability := mysql.CLIENT_PROTOCOL_41 | mysql.CLIENT_SECURE_CONNECTION |
+	mysql.CLIENT_LONG_PASSWORD | mysql.CLIENT_TRANSACTIONS | mysql.CLIENT_LONG_FLAG*/
 	capability &= c.capability
 
 	//packet length
@@ -288,7 +289,7 @@ func (c *Conn) writeAuthHandshake(authResp []byte, plugin string) error {
 		capability |= mysql.CLIENT_FOUND_ROWS
 	}
 
-	if c.tls != nil {
+	if c.enableTls {
 		capability |= mysql.CLIENT_SSL
 	}
 
@@ -344,7 +345,7 @@ func (c *Conn) writeAuthHandshake(authResp []byte, plugin string) error {
 
 	// SSL Connection Request Packet
 	// http://dev.mysql.com/doc/internals/en/connection-phase-packets.html#packet-Protocol::SSLRequest
-	if c.pkg != nil {
+	if c.enableTls {
 		// Send TLS / SSL request packet
 		if err := c.writePacket(data[:(4+4+1+23)+4]); err != nil {
 			return err

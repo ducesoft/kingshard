@@ -16,15 +16,13 @@ package mysql
 
 import (
 	"bufio"
-	"encoding/hex"
-	"fmt"
 	"github.com/flike/kingshard/core/errors"
 	"io"
 	"net"
 )
 
 const (
-	defaultReaderSize = 8 * 1024
+	defaultReaderSize = 4 * 1024
 )
 
 type PacketIO struct {
@@ -45,6 +43,7 @@ func NewPacketIO(conn net.Conn) *PacketIO {
 	return p
 }
 
+// readNext if not available, read via conn
 func (p *PacketIO) readNext(length int) ([]byte, error) {
 	data := make([]byte, length)
 	_, err := p.rb.Read(data)
@@ -56,11 +55,8 @@ func (p *PacketIO) ReadPacket() ([]byte, error) {
 	for {
 		// read packet header
 		data, err := p.readNext(4)
-		fmt.Printf("data,%d,%d,%d,%d\n", data[0], data[1], data[2], data[3])
 		if err != nil {
-			data, _ = io.ReadAll(p.rb)
-			fmt.Printf("hex:%s\n", hex.EncodeToString(data))
-			return nil, ErrBadConn
+			return nil, ErrInvalidConn
 		}
 
 		// packet length [24 bit]
@@ -71,7 +67,7 @@ func (p *PacketIO) ReadPacket() ([]byte, error) {
 			if data[3] > p.Sequence {
 				return nil, ErrPktSyncMul
 			}
-			return nil, fmt.Errorf("invalid sequence %d != %d", data[3], p.Sequence)
+			return nil, ErrPktSync
 		}
 		p.Sequence++
 
@@ -80,7 +76,7 @@ func (p *PacketIO) ReadPacket() ([]byte, error) {
 		if pktLen == 0 {
 			// there was no previous packet
 			if prevData == nil {
-				return nil, errors.ErrInvalidConn
+				return nil, ErrInvalidConn
 			}
 
 			return prevData, nil
@@ -89,7 +85,7 @@ func (p *PacketIO) ReadPacket() ([]byte, error) {
 		// read packet body [pktLen bytes]
 		data, err = p.readNext(pktLen)
 		if err != nil {
-			return nil, errors.ErrInvalidConn
+			return nil, ErrInvalidConn
 		}
 
 		// return data if this was the last packet
@@ -98,8 +94,10 @@ func (p *PacketIO) ReadPacket() ([]byte, error) {
 			if prevData == nil {
 				return data, nil
 			}
+
 			return append(prevData, data...), nil
 		}
+
 		prevData = append(prevData, data...)
 	}
 }

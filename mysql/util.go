@@ -15,8 +15,6 @@
 package mysql
 
 import (
-	crand "crypto/rand"
-	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/binary"
@@ -89,7 +87,7 @@ func ScramblePassword(scramble, password []byte) []byte {
 	return scramble
 }
 
-// seed must be in the range of ascii
+// RandomBuf seed must be in the range of ascii
 func RandomBuf(size int) ([]byte, error) {
 	buf := make([]byte, size)
 	rand.Seed(time.Now().UTC().UnixNano())
@@ -134,17 +132,6 @@ func LengthEncodedInt(b []byte) (num uint64, isNull bool, n int) {
 	num = uint64(b[0])
 	n = 1
 	return
-}
-
-func EncryptPassword(password string, seed []byte, pub *rsa.PublicKey) ([]byte, error) {
-	plain := make([]byte, len(password)+1)
-	copy(plain, password)
-	for i := range plain {
-		j := i % len(seed)
-		plain[i] ^= seed[j]
-	}
-	sha1 := sha1.New()
-	return rsa.EncryptOAEP(sha1, crand.Reader, pub, plain, nil)
 }
 
 // AppendLengthEncodedInteger encodes a uint64 value and appends it to the given bytes slice
