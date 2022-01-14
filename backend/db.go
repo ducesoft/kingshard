@@ -203,6 +203,7 @@ func (db *DB) newConn() (*Conn, error) {
 		tls: &tls.Config{
 			InsecureSkipVerify: true,
 		},
+		allowNativePasswords: true, // allow mysql5 default auth:native password
 	}
 
 	if err := co.Connect(db.addr, db.user, db.password, db.db); err != nil {

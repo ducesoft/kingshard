@@ -80,7 +80,7 @@ func (c *Conn) Connect(addr string, user string, password string, db string) err
 	c.addr = addr
 	c.user = user
 	c.password = password
-	c.db = "ks_db"
+	c.db = db
 
 	//use utf8
 	c.collation = mysql.DEFAULT_COLLATION_ID
