@@ -66,8 +66,11 @@ type ClientConn struct {
 	stmts map[uint32]*Stmt //prepare相关,client端到proxy的stmt
 
 	configVer uint32 //check config version for reload online
+
+	authPlugin string // auth plugin such as mysql_native_password
 }
 
+//mysql.CLIENT_PLUGIN_AUTH |
 var DEFAULT_CAPABILITY uint32 = mysql.CLIENT_LONG_PASSWORD | mysql.CLIENT_LONG_FLAG |
 	mysql.CLIENT_CONNECT_WITH_DB | mysql.CLIENT_PROTOCOL_41 |
 	mysql.CLIENT_TRANSACTIONS | mysql.CLIENT_SECURE_CONNECTION
@@ -175,9 +178,14 @@ func (c *ClientConn) writeInitialHandshake() error {
 	//auth-plugin-data-part-2
 	data = append(data, c.salt[8:]...)
 
+	// capabilities & CLIENT_PLUGIN_AUTH string [NUL]
+	/*if c.capability&mysql.CLIENT_PLUGIN_AUTH > 0 {
+		authPlugin := c.proxy.GetDefaultClientAuthPlugin()
+		data = append(data, []byte(authPlugin)...)
+	}*/
+
 	//filter [00]
 	data = append(data, 0)
-
 	return c.writePacket(data)
 }
 
@@ -221,34 +229,30 @@ func (c *ClientConn) readHandshakeResponse() error {
 
 	pos += len(c.user) + 1
 
-	//auth length and auth
-	authLen := int(data[pos])
-	pos++
-	auth := data[pos : pos+authLen]
-
-	//check user
-	if _, ok := c.proxy.users[c.user]; !ok {
-		golog.Error("ClientConn", "readHandshakeResponse", "error", 0,
-			"auth", auth,
-			"client_user", c.user,
-			"config_set_user", c.user,
-			"password", c.proxy.users[c.user])
-		return mysql.NewDefaultError(mysql.ER_ACCESS_DENIED_ERROR, c.user, c.c.RemoteAddr().String(), "Yes")
+	var auth []byte
+	var authLen int
+	// https://dev.mysql.com/doc/internals/en/connection-phase-packets.html#packet-Protocol::HandshakeResponse
+	if c.capability&mysql.CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA > 0 {
+		// lenenc-int     length of auth-response
+		// string[n]      auth-response
+		authRespLen, _, rlen := mysql.LengthEncodedInt(data[pos:])
+		pos += rlen
+		authLen = int(authRespLen)
+		auth = data[pos : pos+authLen]
+		pos += authLen
+	} else if c.capability&mysql.CLIENT_SECURE_CONNECTION > 0 {
+		//auth length and auth
+		authLen = int(data[pos])
+		pos++
+		auth = data[pos : pos+authLen]
+		pos += authLen
+	} else {
+		// string[NUL]    auth-response
+		end := bytes.IndexByte(data[pos:], 0x00)
+		authLen = end + 1 - pos
+		auth = data[pos : pos+authLen]
+		pos = end + 1
 	}
-
-	//check password
-	checkAuth := mysql.ScramblePassword(c.salt, []byte(c.proxy.users[c.user]))
-	if !bytes.Equal(auth, checkAuth) {
-		golog.Error("ClientConn", "readHandshakeResponse", "error", 0,
-			"auth", auth,
-			"checkAuth", checkAuth,
-			"client_user", c.user,
-			"config_set_user", c.user,
-			"password", c.proxy.users[c.user])
-		return mysql.NewDefaultError(mysql.ER_ACCESS_DENIED_ERROR, c.user, c.c.RemoteAddr().String(), "Yes")
-	}
-
-	pos += authLen
 
 	var db string
 	if c.capability&mysql.CLIENT_CONNECT_WITH_DB > 0 {
@@ -261,6 +265,39 @@ func (c *ClientConn) readHandshakeResponse() error {
 
 	}
 	c.db = db
+
+	var authPlugin string
+	if len(data[pos:]) > 0 && c.capability&mysql.CLIENT_PLUGIN_AUTH > 0 {
+		authPlugin = string(data[pos : pos+bytes.IndexByte(data[pos:], 0)])
+		pos += len(authPlugin) + 1
+	}
+
+	if len(authPlugin) == 0 {
+		authPlugin = mysql.AuthPlugin
+		c.authPlugin = authPlugin
+	}
+
+	//check user
+	if _, ok := c.proxy.users[c.user]; !ok {
+		golog.Error("ClientConn", "readHandshakeResponse", "error", 0,
+			"auth", auth,
+			"client_user", c.user,
+			"config_set_user", c.user,
+			"password", c.proxy.users[c.user])
+		return mysql.NewDefaultError(mysql.ER_ACCESS_DENIED_ERROR, c.user, c.c.RemoteAddr().String(), "Yes")
+	}
+
+	//check auth
+	authResp, err := c.pkg.Auth(auth, authPlugin)
+	if err != nil {
+		golog.Error("ClientConn", "readHandshakeResponse", "error", 0,
+			"auth", auth,
+			"checkAuth", authResp,
+			"client_user", c.user,
+			"config_set_user", c.user,
+			"password", c.proxy.users[c.user])
+		return mysql.NewDefaultError(mysql.ER_ACCESS_DENIED_ERROR, c.user, c.c.RemoteAddr().String(), "Yes")
+	}
 
 	return nil
 }

@@ -16,6 +16,8 @@ package mysql
 
 import (
 	"bufio"
+	"crypto/rsa"
+	"crypto/tls"
 	"github.com/flike/kingshard/core/errors"
 	"io"
 	"net"
@@ -25,20 +27,37 @@ const (
 	defaultReaderSize = 4 * 1024
 )
 
+type ConnConfig struct {
+	Username                string
+	Password                string
+	Pubkey                  *rsa.PublicKey
+	AllowAllFiles           bool        // Allow all files to be used with LOAD DATA LOCAL INFILE
+	AllowCleartextPasswords bool        // Allows the cleartext client side plugin
+	AllowNativePasswords    bool        // Allows the native password authentication method
+	AllowOldPasswords       bool        // Allows the old insecure password method
+	EnableTls               bool        // enable tls default false only true tls and tlsConfig is active
+	Tls                     *tls.Config // TLS configuration
+	TlsConfig               string      // TLS configuration name
+}
+
 type PacketIO struct {
 	rb *bufio.Reader
 	wb io.Writer
 
 	Sequence uint8
+
+	connConfig *ConnConfig
 }
 
-func NewPacketIO(conn net.Conn) *PacketIO {
+func NewPacketIO(conn net.Conn, cc *ConnConfig) *PacketIO {
 	p := new(PacketIO)
 
 	p.rb = bufio.NewReaderSize(conn, defaultReaderSize)
 	p.wb = conn
 
 	p.Sequence = 0
+
+	p.connConfig = cc
 
 	return p
 }

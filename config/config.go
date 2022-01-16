@@ -25,22 +25,23 @@ var configFileName string
 
 //整个config文件对应的结构
 type Config struct {
-	Addr     		string       	`yaml:"addr"`
-	PrometheusAddr 	string		 	`yaml:"prometheus_addr"`
-	UserList 		[]UserConfig 	`yaml:"user_list"`
+	Addr           string       `yaml:"addr"`
+	PrometheusAddr string       `yaml:"prometheus_addr"`
+	UserList       []UserConfig `yaml:"user_list"`
 
 	WebAddr     string `yaml:"web_addr"`
 	WebUser     string `yaml:"web_user"`
 	WebPassword string `yaml:"web_password"`
 
-	LogPath     string       `yaml:"log_path"`
-	LogLevel    string       `yaml:"log_level"`
-	LogSql      string       `yaml:"log_sql"`
-	SlowLogTime int          `yaml:"slow_log_time"`
-	AllowIps    string       `yaml:"allow_ips"`
-	BlsFile     string       `yaml:"blacklist_sql_file"`
-	Charset     string       `yaml:"proxy_charset"`
-	Nodes       []NodeConfig `yaml:"nodes"`
+	LogPath      string       `yaml:"log_path"`
+	LogLevel     string       `yaml:"log_level"`
+	LogSql       string       `yaml:"log_sql"`
+	SlowLogTime  int          `yaml:"slow_log_time"`
+	AllowIps     string       `yaml:"allow_ips"`
+	BlsFile      string       `yaml:"blacklist_sql_file"`
+	Charset      string       `yaml:"proxy_charset"`
+	MysqlVersion string       `yaml:"mysql_version"` // default mysql5 such as 5.7
+	Nodes        []NodeConfig `yaml:"nodes"`
 
 	SchemaList []SchemaConfig `yaml:"schema_list"`
 }

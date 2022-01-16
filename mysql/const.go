@@ -176,7 +176,10 @@ const (
 )
 
 const (
-	AUTH_NAME = "mysql_native_password"
+	// AuthPlugin version under mysql 8 default auth plugin
+	AuthPlugin = "mysql_native_password"
+	// AuthPlugin8 mysql8 default auth plugin
+	AuthPlugin8 = "caching_sha2_password"
 )
 
 var (

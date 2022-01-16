@@ -115,7 +115,21 @@ func (c *Conn) ReConnect() error {
 	tcpConn.SetNoDelay(false)
 	tcpConn.SetKeepAlive(true)
 	c.conn = tcpConn
-	c.pkg = mysql.NewPacketIO(tcpConn)
+
+	// copy config
+	connConfig := &mysql.ConnConfig{
+		Username:                c.user,
+		Password:                c.password,
+		Pubkey:                  c.pubkey,
+		AllowAllFiles:           c.allowAllFiles,
+		AllowCleartextPasswords: c.allowCleartextPasswords,
+		AllowNativePasswords:    c.allowNativePasswords,
+		AllowOldPasswords:       c.allowOldPasswords,
+		EnableTls:               c.enableTls,
+		Tls:                     c.tls,
+		TlsConfig:               c.tlsConfig,
+	}
+	c.pkg = mysql.NewPacketIO(tcpConn, connConfig)
 
 	authData, plugin, err := c.readInitialHandshake()
 	c.salt = authData
@@ -126,16 +140,16 @@ func (c *Conn) ReConnect() error {
 
 	// set default
 	if plugin == "" {
-		plugin = mysql.AUTH_NAME
+		plugin = mysql.AuthPlugin
 	}
 
 	// Send Client Authentication Packet
-	authResp, err := c.auth(authData, plugin)
+	authResp, err := c.pkg.Auth(authData, plugin)
 	if err != nil {
 		// try the default auth plugin, if using the requested plugin failed
 		mysql.ErrLog.Print("could not use requested auth plugin '"+plugin+"': ", err.Error())
-		plugin = mysql.AUTH_NAME
-		authResp, err = c.auth(authData, plugin)
+		plugin = mysql.AuthPlugin
+		authResp, err = c.pkg.Auth(authData, plugin)
 		if err != nil {
 			c.conn.Close()
 			return err
@@ -245,7 +259,6 @@ func (c *Conn) readInitialHandshake() (data []byte, plugin string, err error) {
 		// The official Python library uses the fixed length 12
 		// mysql-proxy also use 12
 		// which is not documented but seems to work.
-		//c.salt = append(c.salt, data[pos:pos+12]...)
 		authData = append(authData, data[pos:pos+12]...)
 		pos += 13
 
@@ -932,4 +945,176 @@ func (c *Conn) writeAuthSwitchPacket(authData []byte) error {
 	// Add the auth data [EOF]
 	copy(data[4:], authData)
 	return c.writePacket(data)
+}
+
+func (c *Conn) handleAuthResult(oldAuthData []byte, plugin string) error {
+	// Read Result Packet
+	authData, newPlugin, err := c.readAuthResult()
+	if err != nil {
+		return err
+	}
+
+	// handle auth plugin switch, if requested
+	if newPlugin != "" {
+		// If CLIENT_PLUGIN_AUTH capability is not supported, no new cipher is
+		// sent and we have to keep using the cipher sent in the init packet.
+		if authData == nil {
+			authData = oldAuthData
+		} else {
+			// copy data from read buffer to owned slice
+			copy(oldAuthData, authData)
+		}
+
+		plugin = newPlugin
+
+		authResp, err := c.pkg.Auth(authData, plugin)
+		if err != nil {
+			return err
+		}
+		if err = c.writeAuthSwitchPacket(authResp); err != nil {
+			return err
+		}
+
+		// Read Result Packet
+		authData, newPlugin, err = c.readAuthResult()
+		if err != nil {
+			return err
+		}
+
+		// Do not allow to change the auth plugin more than once
+		if newPlugin != "" {
+			return mysql.ErrMalformPkt
+		}
+	}
+
+	switch plugin {
+
+	// https://insidemysql.com/preparing-your-community-connector-for-mysql-8-part-2-sha256/
+	case "caching_sha2_password":
+		switch len(authData) {
+		case 0:
+			return nil // auth successful
+		case 1:
+			switch authData[0] {
+			case mysql.CachingSha2PasswordFastAuthSuccess:
+				if err = c.readResultOk(); err == nil {
+					return nil // auth successful
+				}
+
+			case mysql.CachingSha2PasswordPerformFullAuthentication:
+				if c.enableTls || c.network == "unix" {
+					// write cleartext auth packet
+					err = c.writeAuthSwitchPacket(append([]byte(c.password), 0))
+					if err != nil {
+						return err
+					}
+				} else {
+					pubKey := c.pubkey
+					if pubKey == nil {
+						var err error
+						// request public key from server
+						data := make([]byte, 4+1)
+						if err != nil {
+							return err
+						}
+						data[4] = mysql.CachingSha2PasswordRequestPublicKey
+						c.writePacket(data)
+
+						// parse public key
+						if data, err = c.readPacket(); err != nil {
+							return err
+						}
+
+						block, rest := pem.Decode(data[1:])
+						if block == nil {
+							return fmt.Errorf("No Pem data found, data: %s", rest)
+						}
+						pkix, err := x509.ParsePKIXPublicKey(block.Bytes)
+						if err != nil {
+							return err
+						}
+						pubKey = pkix.(*rsa.PublicKey)
+					}
+
+					// send encrypted password
+					err = c.sendEncryptedPassword(oldAuthData, pubKey)
+					if err != nil {
+						return err
+					}
+				}
+				return c.readResultOk()
+
+			default:
+				return mysql.ErrMalformPkt
+			}
+		default:
+			return mysql.ErrMalformPkt
+		}
+
+	case "sha256_password":
+		switch len(authData) {
+		case 0:
+			return nil // auth successful
+		default:
+			block, _ := pem.Decode(authData)
+			pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+			if err != nil {
+				return err
+			}
+
+			// send encrypted password
+			err = c.sendEncryptedPassword(oldAuthData, pub.(*rsa.PublicKey))
+			if err != nil {
+				return err
+			}
+			return c.readResultOk()
+		}
+
+	default:
+		return nil // auth successful
+	}
+
+	return err
+}
+
+func (mc *Conn) readAuthResult() ([]byte, string, error) {
+	data, err := mc.readPacket()
+	if err != nil {
+		return nil, "", err
+	}
+
+	// packet indicator
+	switch data[0] {
+
+	case mysql.OK_HEADER:
+		_, err = mc.handleOKPacket(data)
+		return nil, "", err
+
+	case mysql.OK_AUTH_MORE:
+		return data[1:], "", err
+
+	case mysql.EOF_HEADER:
+		if len(data) == 1 {
+			// https://dev.mysql.com/doc/internals/en/connection-phase-packets.html#packet-Protocol::OldAuthSwitchRequest
+			return nil, "mysql_old_password", nil
+		}
+		pluginEndIndex := bytes.IndexByte(data, 0x00)
+		if pluginEndIndex < 0 {
+			return nil, "", mysql.ErrMalformPkt
+		}
+		plugin := string(data[1:pluginEndIndex])
+		authData := data[pluginEndIndex+1:]
+		return authData, plugin, nil
+
+	default: // Error otherwise
+		return nil, "", mc.handleErrorPacket(data)
+	}
+}
+
+func (c *Conn) sendEncryptedPassword(seed []byte, pub *rsa.PublicKey) error {
+	enc, err := mysql.EncryptPassword(c.password, seed, pub)
+	if err != nil {
+		return err
+	}
+	return c.writeAuthSwitchPacket(enc)
 }

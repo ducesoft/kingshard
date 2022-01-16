@@ -332,8 +332,22 @@ func (s *Server) newClientConn(co net.Conn) *ClientConn {
 		c.configVer = s.configVer
 	}()
 
-	c.pkg = mysql.NewPacketIO(tcpConn)
+	// copy config
+	// FIXME fill config
+	cc := &mysql.ConnConfig{
+		Username:                c.user,
+		Password:                c.proxy.users[c.user],
+		Pubkey:                  nil,
+		AllowAllFiles:           false,
+		AllowCleartextPasswords: false,
+		AllowNativePasswords:    true,
+		AllowOldPasswords:       false,
+		EnableTls:               false,
+	}
+	c.pkg = mysql.NewPacketIO(tcpConn, cc)
 	c.proxy = s
+
+	c.capability = DEFAULT_CAPABILITY
 
 	c.pkg.Sequence = 0
 
@@ -739,6 +753,19 @@ func (s *Server) GetAllowIps() []string {
 	return ips
 }
 
+func (s *Server) GetDefaultClientAuthPlugin() string {
+	if s.cfg.MysqlVersion == "" {
+		return mysql.AuthPlugin
+	}
+	mv := strings.Split(s.cfg.MysqlVersion, ".")
+	version, err := strconv.Atoi(mv[0])
+	if err != nil || version < 8 {
+		return mysql.AuthPlugin
+	} else {
+		return mysql.AuthPlugin8
+	}
+}
+
 func (s *Server) UpdateConfig(newCfg *config.Config) {
 	golog.Info("Server", "UpdateConfig", "config reload begin", 0)
 	defer func() {
@@ -842,35 +869,35 @@ func (s *Server) UpdateConfig(newCfg *config.Config) {
 	s.configVer += 1
 }
 
-func (s *Server) GetMonitorData() map[string]map[string]string{
+func (s *Server) GetMonitorData() map[string]map[string]string {
 	data := make(map[string]map[string]string)
 
 	// get all node's monitor data
 	for _, node := range s.nodes {
 		//get master monitor data
 		dbData := make(map[string]string)
-		idleConns,cacheConns,pushConnCount,popConnCount := node.Master.ConnCount()
+		idleConns, cacheConns, pushConnCount, popConnCount := node.Master.ConnCount()
 
-		dbData["idleConn"] 		= strconv.Itoa(idleConns)
-		dbData["cacheConns"] 	= strconv.Itoa(cacheConns)
+		dbData["idleConn"] = strconv.Itoa(idleConns)
+		dbData["cacheConns"] = strconv.Itoa(cacheConns)
 		dbData["pushConnCount"] = strconv.FormatInt(pushConnCount, 10)
-		dbData["popConnCount"] 	= strconv.FormatInt(popConnCount, 10)
-		dbData["maxConn"]	= fmt.Sprintf("%d", node.Cfg.MaxConnNum)
-		dbData["type"] 		= "master"
+		dbData["popConnCount"] = strconv.FormatInt(popConnCount, 10)
+		dbData["maxConn"] = fmt.Sprintf("%d", node.Cfg.MaxConnNum)
+		dbData["type"] = "master"
 
 		data[node.Master.Addr()] = dbData
 
 		//get all slave monitor data
 		for _, slaveNode := range node.Slave {
 			slaveDbData := make(map[string]string)
-			idleConns,cacheConns,pushConnCount,popConnCount := slaveNode.ConnCount()
-			
-			slaveDbData["idleConn"] 		= strconv.Itoa(idleConns)
-			slaveDbData["cacheConns"] 		= strconv.Itoa(cacheConns)
-			slaveDbData["pushConnCount"] 	= strconv.FormatInt(pushConnCount, 10)
-			slaveDbData["popConnCount"] 	= strconv.FormatInt(popConnCount, 10)
-			slaveDbData["maxConn"]	= fmt.Sprintf("%d", node.Cfg.MaxConnNum)
-			slaveDbData["type"] 	= "slave"
+			idleConns, cacheConns, pushConnCount, popConnCount := slaveNode.ConnCount()
+
+			slaveDbData["idleConn"] = strconv.Itoa(idleConns)
+			slaveDbData["cacheConns"] = strconv.Itoa(cacheConns)
+			slaveDbData["pushConnCount"] = strconv.FormatInt(pushConnCount, 10)
+			slaveDbData["popConnCount"] = strconv.FormatInt(popConnCount, 10)
+			slaveDbData["maxConn"] = fmt.Sprintf("%d", node.Cfg.MaxConnNum)
+			slaveDbData["type"] = "slave"
 
 			data[slaveNode.Addr()] = slaveDbData
 		}
