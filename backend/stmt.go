@@ -176,7 +176,7 @@ func (s *Stmt) write(args ...interface{}) error {
 		}
 	}
 
-	s.conn.pkg.Sequence = 0
+	s.conn.Pkg.Sequence = 0
 
 	return s.conn.writePacket(data)
 }

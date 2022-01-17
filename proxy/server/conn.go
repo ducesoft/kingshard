@@ -262,8 +262,16 @@ func (c *ClientConn) readHandshakeResponse() error {
 		pos += len(authPlugin) + 1
 	}
 
+	// mysql 5.5 默认 mysql_native_password
+	// mysql 5.7及 mysql 8 默认 caching_sha2_password
+	// 根据authLen进行判断，如果20位，取：mysql_native_password；否则，取：caching_sha2_password
+	// 这个和MySQL-client版本也有关系
 	if len(authPlugin) == 0 {
-		authPlugin = mysql.AuthPlugin
+		if authLen == 20 {
+			authPlugin = mysql.AuthPlugin
+		} else {
+			authPlugin = mysql.AuthPlugin8
+		}
 	}
 	c.authPlugin = authPlugin
 
@@ -277,10 +285,11 @@ func (c *ClientConn) readHandshakeResponse() error {
 	}
 
 	//check auth
-	err = c.CheckClientAuth(auth, authPlugin)
+	authResp, err := c.CheckClientAuth(auth, authPlugin)
 	if err != nil {
 		golog.Error("ClientConn", "readHandshakeResponse", "error", 0,
 			"auth", auth,
+			"authResp", authResp,
 			"client_user", c.user,
 			"config_set_user", c.user,
 			"password", c.proxy.users[c.user])

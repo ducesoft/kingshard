@@ -25,7 +25,7 @@ type BaseConn struct {
 	Status uint16
 
 	Charset  string
-	Network  string
+	Network  string // tcp or unix
 	Username string
 	Password string
 
@@ -34,19 +34,19 @@ type BaseConn struct {
 	Pubkey *rsa.PublicKey
 }
 
-func (c *BaseConn) CheckClientAuth(oldAuthData []byte, plugin string) error {
+func (c *BaseConn) CheckClientAuth(oldAuthData []byte, plugin string) ([]byte, error) {
+	//cpPlugin := AuthPlugin8
 	if plugin == "" || plugin == AuthPlugin {
 		authResp, err := c.Pkg.Auth(c.Salt, plugin)
 		if err != nil {
-			return err
+			return nil, err
 		} else if !arrayEqual(authResp, oldAuthData) {
-			return ErrNativePassword
+			return nil, ErrNativePassword
 		} else {
-			return nil
+			return authResp, nil
 		}
 	}
-	_, err := c.Pkg.Auth(c.Salt, plugin)
-	return err
+	return c.Pkg.Auth(c.Salt, plugin)
 }
 
 // HandleAuthResult handle client auth result
@@ -307,8 +307,8 @@ func arrayEqual(s, v []byte) bool {
 	if len(s) != len(v) {
 		return false
 	}
-	for _, idx := range s {
-		if s[idx] != v[idx] {
+	for i := 0; i < len(s); i++ {
+		if s[i] != v[i] {
 			return false
 		}
 	}

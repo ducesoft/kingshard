@@ -200,6 +200,7 @@ func (db *DB) newConn() (*Conn, error) {
 	co := &Conn{
 		maxAllowedPacket: mysql.MaxPayloadLen,
 		maxWriteSize:     mysql.MaxPayloadLen - 1,
+		tlsConfig:        "preferred", // not conn via tls as default
 		tls: &tls.Config{
 			InsecureSkipVerify: true,
 		},
@@ -403,7 +404,7 @@ type BackendConn struct {
 
 func (p *BackendConn) Close() {
 	if p != nil && p.Conn != nil {
-		if p.Conn.pkgErr != nil {
+		if p.Conn.PkgErr != nil {
 			p.db.closeConn(p.Conn)
 		} else {
 			p.db.PushConn(p.Conn, nil)
