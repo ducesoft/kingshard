@@ -148,7 +148,7 @@ func (c *Conn) ReConnect() error {
 		c.C.Close()
 		return err
 	}
-	if err = c.handleAuthResult(authData, plugin); err != nil {
+	if err = c.HandleAuthResult(authData, plugin); err != nil {
 		c.C.Close()
 		return err
 	}
@@ -824,18 +824,6 @@ func (c *Conn) readOK() (string, *mysql.Result, error) {
 	}
 }
 
-func (c *Conn) readResultOk() error {
-	data, err := c.Pkg.ReadPacket()
-	if err != nil {
-		return err
-	}
-	if data[0] == mysql.OK_HEADER {
-		_, err1 := c.handleOKPacket(data)
-		return err1
-	}
-	return c.handleErrorPacket(data)
-}
-
 func (c *Conn) checkAuthResult(authData []byte, plugin string) error {
 	switch plugin {
 	case "caching_sha2_password":
@@ -846,14 +834,14 @@ func (c *Conn) checkAuthResult(authData []byte, plugin string) error {
 			fmt.Printf("data[0]:%d\n", authData[0])
 			switch authData[0] {
 			case mysql.CachingSha2PasswordFastAuthSuccess:
-				if err := c.readResultOk(); err == nil {
+				if err := c.ReadResultOk(); err == nil {
 					return nil
 				}
 			case mysql.CachingSha2PasswordPerformFullAuthentication:
 				// not support tls
 				fmt.Printf("network:%s\n", c.Network)
 				if c.Network == "unix" {
-					err := c.writeAuthSwitchPacket(append([]byte(c.Password), 0))
+					err := c.WriteAuthSwitchPacket(append([]byte(c.Password), 0))
 					if err != nil {
 						return err
 					}
@@ -881,12 +869,12 @@ func (c *Conn) checkAuthResult(authData []byte, plugin string) error {
 						}
 						pubKey = pkix.(*rsa.PublicKey)
 					}
-					err := c.sendEncryptedPassword(authData, pubKey)
+					err := c.SendEncryptedPassword(authData, pubKey)
 					if err != nil {
 						return err
 					}
 				}
-				return c.readResultOk()
+				return c.ReadResultOk()
 			default:
 				return errors.New("malformed packet")
 			}
@@ -925,184 +913,4 @@ func (c *Conn) IsInTransaction() bool {
 
 func (c *Conn) GetCharset() string {
 	return c.charset
-}
-
-func (c *Conn) writeAuthSwitchPacket(authData []byte) error {
-	pktLen := 4 + len(authData)
-	data := make([]byte, pktLen)
-	// Add the auth data [EOF]
-	copy(data[4:], authData)
-	return c.writePacket(data)
-}
-
-func (c *Conn) handleAuthResult(oldAuthData []byte, plugin string) error {
-	// Read Result Packet
-	authData, newPlugin, err := c.readAuthResult()
-	if err != nil {
-		return err
-	}
-
-	// handle auth plugin switch, if requested
-	if newPlugin != "" {
-		// If CLIENT_PLUGIN_AUTH capability is not supported, no new cipher is
-		// sent and we have to keep using the cipher sent in the init packet.
-		if authData == nil {
-			authData = oldAuthData
-		} else {
-			// copy data from read buffer to owned slice
-			copy(oldAuthData, authData)
-		}
-
-		plugin = newPlugin
-
-		authResp, err := c.Pkg.Auth(authData, plugin)
-		if err != nil {
-			return err
-		}
-		if err = c.writeAuthSwitchPacket(authResp); err != nil {
-			return err
-		}
-
-		// Read Result Packet
-		authData, newPlugin, err = c.readAuthResult()
-		if err != nil {
-			return err
-		}
-
-		// Do not allow to change the auth plugin more than once
-		if newPlugin != "" {
-			return mysql.ErrMalformPkt
-		}
-	}
-
-	switch plugin {
-
-	// https://insidemysql.com/preparing-your-community-connector-for-mysql-8-part-2-sha256/
-	case "caching_sha2_password":
-		switch len(authData) {
-		case 0:
-			return nil // auth successful
-		case 1:
-			switch authData[0] {
-			case mysql.CachingSha2PasswordFastAuthSuccess:
-				if err = c.readResultOk(); err == nil {
-					return nil // auth successful
-				}
-
-			case mysql.CachingSha2PasswordPerformFullAuthentication:
-				if c.EnableTls || c.Network == "unix" {
-					// write cleartext auth packet
-					err = c.writeAuthSwitchPacket(append([]byte(c.Password), 0))
-					if err != nil {
-						return err
-					}
-				} else {
-					pubKey := c.Pubkey
-					if pubKey == nil {
-						var err error
-						// request public key from server
-						data := make([]byte, 4+1)
-						if err != nil {
-							return err
-						}
-						data[4] = mysql.CachingSha2PasswordRequestPublicKey
-						c.writePacket(data)
-
-						// parse public key
-						if data, err = c.readPacket(); err != nil {
-							return err
-						}
-
-						block, rest := pem.Decode(data[1:])
-						if block == nil {
-							return fmt.Errorf("No Pem data found, data: %s", rest)
-						}
-						pkix, err := x509.ParsePKIXPublicKey(block.Bytes)
-						if err != nil {
-							return err
-						}
-						pubKey = pkix.(*rsa.PublicKey)
-					}
-
-					// send encrypted password
-					err = c.sendEncryptedPassword(oldAuthData, pubKey)
-					if err != nil {
-						return err
-					}
-				}
-				return c.readResultOk()
-
-			default:
-				return mysql.ErrMalformPkt
-			}
-		default:
-			return mysql.ErrMalformPkt
-		}
-
-	case "sha256_password":
-		switch len(authData) {
-		case 0:
-			return nil // auth successful
-		default:
-			block, _ := pem.Decode(authData)
-			pub, err := x509.ParsePKIXPublicKey(block.Bytes)
-			if err != nil {
-				return err
-			}
-
-			// send encrypted password
-			err = c.sendEncryptedPassword(oldAuthData, pub.(*rsa.PublicKey))
-			if err != nil {
-				return err
-			}
-			return c.readResultOk()
-		}
-
-	default:
-		return nil // auth successful
-	}
-
-	return err
-}
-
-func (mc *Conn) readAuthResult() ([]byte, string, error) {
-	data, err := mc.readPacket()
-	if err != nil {
-		return nil, "", err
-	}
-
-	// packet indicator
-	switch data[0] {
-
-	case mysql.OK_HEADER:
-		_, err = mc.handleOKPacket(data)
-		return nil, "", err
-
-	case mysql.OK_AUTH_MORE:
-		return data[1:], "", err
-
-	case mysql.EOF_HEADER:
-		if len(data) == 1 {
-			// https://dev.mysql.com/doc/internals/en/connection-phase-packets.html#packet-Protocol::OldAuthSwitchRequest
-			return nil, "mysql_old_password", nil
-		}
-		pluginEndIndex := bytes.IndexByte(data, 0x00)
-		if pluginEndIndex < 0 {
-			return nil, "", mysql.ErrMalformPkt
-		}
-		plugin := string(data[1:pluginEndIndex])
-		authData := data[pluginEndIndex+1:]
-		return authData, plugin, nil
-
-	default: // Error otherwise
-		return nil, "", mc.handleErrorPacket(data)
-	}
-}
-
-func (c *Conn) sendEncryptedPassword(seed []byte, pub *rsa.PublicKey) error {
-	enc, err := mysql.EncryptPassword(c.Password, seed, pub)
-	if err != nil {
-		return err
-	}
-	return c.writeAuthSwitchPacket(enc)
 }

@@ -74,7 +74,7 @@ func (c *BaseConn) HandleAuthResult(oldAuthData []byte, plugin string) error {
 		if err != nil {
 			return err
 		}
-		if err = c.writeAuthSwitchPacket(authResp); err != nil {
+		if err = c.WriteAuthSwitchPacket(authResp); err != nil {
 			return err
 		}
 
@@ -100,14 +100,14 @@ func (c *BaseConn) HandleAuthResult(oldAuthData []byte, plugin string) error {
 		case 1:
 			switch authData[0] {
 			case CachingSha2PasswordFastAuthSuccess:
-				if err = c.readResultOk(); err == nil {
+				if err = c.ReadResultOk(); err == nil {
 					return nil // auth successful
 				}
 
 			case CachingSha2PasswordPerformFullAuthentication:
 				if c.EnableTls || c.Network == "unix" {
 					// write cleartext auth packet
-					err = c.writeAuthSwitchPacket(append([]byte(c.Password), 0))
+					err = c.WriteAuthSwitchPacket(append([]byte(c.Password), 0))
 					if err != nil {
 						return err
 					}
@@ -140,12 +140,12 @@ func (c *BaseConn) HandleAuthResult(oldAuthData []byte, plugin string) error {
 					}
 
 					// send encrypted password
-					err = c.sendEncryptedPassword(oldAuthData, pubKey)
+					err = c.SendEncryptedPassword(oldAuthData, pubKey)
 					if err != nil {
 						return err
 					}
 				}
-				return c.readResultOk()
+				return c.ReadResultOk()
 
 			default:
 				return ErrMalformPkt
@@ -166,11 +166,11 @@ func (c *BaseConn) HandleAuthResult(oldAuthData []byte, plugin string) error {
 			}
 
 			// send encrypted password
-			err = c.sendEncryptedPassword(oldAuthData, pub.(*rsa.PublicKey))
+			err = c.SendEncryptedPassword(oldAuthData, pub.(*rsa.PublicKey))
 			if err != nil {
 				return err
 			}
-			return c.readResultOk()
+			return c.ReadResultOk()
 		}
 
 	default:
@@ -180,15 +180,15 @@ func (c *BaseConn) HandleAuthResult(oldAuthData []byte, plugin string) error {
 	return err
 }
 
-func (c *BaseConn) sendEncryptedPassword(seed []byte, pub *rsa.PublicKey) error {
+func (c *BaseConn) SendEncryptedPassword(seed []byte, pub *rsa.PublicKey) error {
 	enc, err := EncryptPassword(c.Password, seed, pub)
 	if err != nil {
 		return err
 	}
-	return c.writeAuthSwitchPacket(enc)
+	return c.WriteAuthSwitchPacket(enc)
 }
 
-func (c *BaseConn) writeAuthSwitchPacket(authData []byte) error {
+func (c *BaseConn) WriteAuthSwitchPacket(authData []byte) error {
 	pktLen := 4 + len(authData)
 	data := make([]byte, pktLen)
 	// Add the auth data [EOF]
@@ -202,7 +202,7 @@ func (c *BaseConn) readPacket() ([]byte, error) {
 	return d, err
 }
 
-func (c *BaseConn) readResultOk() error {
+func (c *BaseConn) ReadResultOk() error {
 	data, err := c.Pkg.ReadPacket()
 	if err != nil {
 		return err
