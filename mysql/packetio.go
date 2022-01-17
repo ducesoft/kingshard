@@ -62,6 +62,11 @@ func NewPacketIO(conn net.Conn, cc *ConnConfig) *PacketIO {
 	return p
 }
 
+func (p *PacketIO) SetUserAndPwd(username, password string) {
+	p.connConfig.Username = username
+	p.connConfig.Password = password
+}
+
 // readNext if not available, read via conn
 func (p *PacketIO) readNext(length int) ([]byte, error) {
 	data := make([]byte, length)

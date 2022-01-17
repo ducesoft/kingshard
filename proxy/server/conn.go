@@ -28,19 +28,19 @@ import (
 	"github.com/flike/kingshard/mysql"
 )
 
+var (
+	DEFAULT_CAPABILITY = mysql.CLIENT_LONG_PASSWORD | mysql.CLIENT_LONG_FLAG |
+		mysql.CLIENT_CONNECT_WITH_DB | mysql.CLIENT_PROTOCOL_41 |
+		mysql.CLIENT_TRANSACTIONS | mysql.CLIENT_SECURE_CONNECTION //| mysql.CLIENT_PLUGIN_AUTH
+)
+
 //client <-> proxy
 type ClientConn struct {
 	sync.Mutex
 
-	pkg *mysql.PacketIO
-
-	c net.Conn
-
 	proxy *Server
 
-	capability uint32
-
-	connectionId uint32
+	mysql.BaseConn
 
 	status    uint16
 	collation mysql.CollationId
@@ -48,8 +48,6 @@ type ClientConn struct {
 
 	user string
 	db   string
-
-	salt []byte
 
 	nodes  map[string]*backend.Node
 	schema *Schema
@@ -70,15 +68,10 @@ type ClientConn struct {
 	authPlugin string // auth plugin such as mysql_native_password
 }
 
-//mysql.CLIENT_PLUGIN_AUTH |
-var DEFAULT_CAPABILITY uint32 = mysql.CLIENT_LONG_PASSWORD | mysql.CLIENT_LONG_FLAG |
-	mysql.CLIENT_CONNECT_WITH_DB | mysql.CLIENT_PROTOCOL_41 |
-	mysql.CLIENT_TRANSACTIONS | mysql.CLIENT_SECURE_CONNECTION
-
 var baseConnId uint32 = 10000
 
 func (c *ClientConn) IsAllowConnect() bool {
-	clientHost, _, err := net.SplitHostPort(c.c.RemoteAddr().String())
+	clientHost, _, err := net.SplitHostPort(c.C.RemoteAddr().String())
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -96,20 +89,20 @@ func (c *ClientConn) IsAllowConnect() bool {
 	}
 
 	golog.Error("server", "IsAllowConnect", "error", mysql.ER_ACCESS_DENIED_ERROR,
-		"ip address", c.c.RemoteAddr().String(), " access denied by kindshard.")
+		"ip address", c.C.RemoteAddr().String(), " access denied by kindshard.")
 	return false
 }
 
 func (c *ClientConn) Handshake() error {
 	if err := c.writeInitialHandshake(); err != nil {
 		golog.Error("server", "Handshake", err.Error(),
-			c.connectionId, "msg", "send initial handshake error")
+			c.ConnectionId, "msg", "send initial handshake error")
 		return err
 	}
 
 	if err := c.readHandshakeResponse(); err != nil {
 		golog.Error("server", "readHandshakeResponse",
-			err.Error(), c.connectionId,
+			err.Error(), c.ConnectionId,
 			"msg", "read Handshake Response error")
 		return err
 	}
@@ -117,11 +110,11 @@ func (c *ClientConn) Handshake() error {
 	if err := c.writeOK(nil); err != nil {
 		golog.Error("server", "readHandshakeResponse",
 			"write ok fail",
-			c.connectionId, "error", err.Error())
+			c.ConnectionId, "error", err.Error())
 		return err
 	}
 
-	c.pkg.Sequence = 0
+	c.Pkg.Sequence = 0
 	return nil
 }
 
@@ -130,7 +123,7 @@ func (c *ClientConn) Close() error {
 		return nil
 	}
 
-	c.c.Close()
+	c.C.Close()
 
 	c.closed = true
 
@@ -148,10 +141,10 @@ func (c *ClientConn) writeInitialHandshake() error {
 	data = append(data, 0)
 
 	//connection id
-	data = append(data, byte(c.connectionId), byte(c.connectionId>>8), byte(c.connectionId>>16), byte(c.connectionId>>24))
+	data = append(data, byte(c.ConnectionId), byte(c.ConnectionId>>8), byte(c.ConnectionId>>16), byte(c.ConnectionId>>24))
 
 	//auth-plugin-data-part-1
-	data = append(data, c.salt[0:8]...)
+	data = append(data, c.Salt[0:8]...)
 
 	//filter [00]
 	data = append(data, 0)
@@ -176,29 +169,25 @@ func (c *ClientConn) writeInitialHandshake() error {
 	data = append(data, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
 	//auth-plugin-data-part-2
-	data = append(data, c.salt[8:]...)
+	data = append(data, c.Salt[8:]...)
 
 	// capabilities & CLIENT_PLUGIN_AUTH string [NUL]
-	/*if c.capability&mysql.CLIENT_PLUGIN_AUTH > 0 {
+	if c.Capability&mysql.CLIENT_PLUGIN_AUTH > 0 {
 		authPlugin := c.proxy.GetDefaultClientAuthPlugin()
 		data = append(data, []byte(authPlugin)...)
-	}*/
+	}
 
 	//filter [00]
 	data = append(data, 0)
-	return c.writePacket(data)
+	return c.WritePacket(data)
 }
 
 func (c *ClientConn) readPacket() ([]byte, error) {
-	return c.pkg.ReadPacket()
-}
-
-func (c *ClientConn) writePacket(data []byte) error {
-	return c.pkg.WritePacket(data)
+	return c.Pkg.ReadPacket()
 }
 
 func (c *ClientConn) writePacketBatch(total, data []byte, direct bool) ([]byte, error) {
-	return c.pkg.WritePacketBatch(total, data, direct)
+	return c.Pkg.WritePacketBatch(total, data, direct)
 }
 
 func (c *ClientConn) readHandshakeResponse() error {
@@ -211,7 +200,7 @@ func (c *ClientConn) readHandshakeResponse() error {
 	pos := 0
 
 	//capability
-	c.capability = binary.LittleEndian.Uint32(data[:4])
+	c.Capability = binary.LittleEndian.Uint32(data[:4])
 	pos += 4
 
 	//skip max packet size
@@ -224,15 +213,16 @@ func (c *ClientConn) readHandshakeResponse() error {
 	//skip reserved 23[00]
 	pos += 23
 
-	//user name
-	c.user = string(data[pos : pos+bytes.IndexByte(data[pos:], 0)])
+	//user name send by client
+	user := string(data[pos : pos+bytes.IndexByte(data[pos:], 0)])
+	c.refreshUser(user)
 
 	pos += len(c.user) + 1
 
 	var auth []byte
 	var authLen int
 	// https://dev.mysql.com/doc/internals/en/connection-phase-packets.html#packet-Protocol::HandshakeResponse
-	if c.capability&mysql.CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA > 0 {
+	if c.Capability&mysql.CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA > 0 {
 		// lenenc-int     length of auth-response
 		// string[n]      auth-response
 		authRespLen, _, rlen := mysql.LengthEncodedInt(data[pos:])
@@ -240,7 +230,7 @@ func (c *ClientConn) readHandshakeResponse() error {
 		authLen = int(authRespLen)
 		auth = data[pos : pos+authLen]
 		pos += authLen
-	} else if c.capability&mysql.CLIENT_SECURE_CONNECTION > 0 {
+	} else if c.Capability&mysql.CLIENT_SECURE_CONNECTION > 0 {
 		//auth length and auth
 		authLen = int(data[pos])
 		pos++
@@ -255,7 +245,7 @@ func (c *ClientConn) readHandshakeResponse() error {
 	}
 
 	var db string
-	if c.capability&mysql.CLIENT_CONNECT_WITH_DB > 0 {
+	if c.Capability&mysql.CLIENT_CONNECT_WITH_DB > 0 {
 		if len(data[pos:]) == 0 {
 			return nil
 		}
@@ -267,36 +257,34 @@ func (c *ClientConn) readHandshakeResponse() error {
 	c.db = db
 
 	var authPlugin string
-	if len(data[pos:]) > 0 && c.capability&mysql.CLIENT_PLUGIN_AUTH > 0 {
+	if len(data[pos:]) > 0 && c.Capability&mysql.CLIENT_PLUGIN_AUTH > 0 {
 		authPlugin = string(data[pos : pos+bytes.IndexByte(data[pos:], 0)])
 		pos += len(authPlugin) + 1
 	}
 
 	if len(authPlugin) == 0 {
 		authPlugin = mysql.AuthPlugin
-		c.authPlugin = authPlugin
 	}
+	c.authPlugin = authPlugin
 
-	//check user
 	if _, ok := c.proxy.users[c.user]; !ok {
 		golog.Error("ClientConn", "readHandshakeResponse", "error", 0,
 			"auth", auth,
 			"client_user", c.user,
 			"config_set_user", c.user,
 			"password", c.proxy.users[c.user])
-		return mysql.NewDefaultError(mysql.ER_ACCESS_DENIED_ERROR, c.user, c.c.RemoteAddr().String(), "Yes")
+		return mysql.NewDefaultError(mysql.ER_ACCESS_DENIED_ERROR, c.user, c.C.RemoteAddr().String(), "Yes")
 	}
 
 	//check auth
-	authResp, err := c.pkg.Auth(auth, authPlugin)
+	err = c.CheckClientAuth(auth, authPlugin)
 	if err != nil {
 		golog.Error("ClientConn", "readHandshakeResponse", "error", 0,
 			"auth", auth,
-			"checkAuth", authResp,
 			"client_user", c.user,
 			"config_set_user", c.user,
 			"password", c.proxy.users[c.user])
-		return mysql.NewDefaultError(mysql.ER_ACCESS_DENIED_ERROR, c.user, c.c.RemoteAddr().String(), "Yes")
+		return mysql.NewDefaultError(mysql.ER_ACCESS_DENIED_ERROR, c.user, c.C.RemoteAddr().String(), "Yes")
 	}
 
 	return nil
@@ -337,21 +325,21 @@ func (c *ClientConn) Run() {
 			err := c.reloadConfig()
 			if nil != err {
 				golog.Error("ClientConn", "Run",
-					err.Error(), c.connectionId,
+					err.Error(), c.ConnectionId,
 				)
 				c.writeError(err)
 				return
 			}
 			c.configVer = c.proxy.configVer
 			golog.Debug("ClientConn", "Run",
-				fmt.Sprintf("config reload ok, ver:%d", c.configVer), c.connectionId,
+				fmt.Sprintf("config reload ok, ver:%d", c.configVer), c.ConnectionId,
 			)
 		}
 
 		if err := c.dispatch(data); err != nil {
 			c.proxy.counter.IncrErrLogTotal()
 			golog.Error("ClientConn", "Run",
-				err.Error(), c.connectionId,
+				err.Error(), c.ConnectionId,
 			)
 			c.writeError(err)
 			if err == mysql.ErrBadConn {
@@ -363,7 +351,7 @@ func (c *ClientConn) Run() {
 			return
 		}
 
-		c.pkg.Sequence = 0
+		c.Pkg.Sequence = 0
 	}
 }
 
@@ -417,12 +405,12 @@ func (c *ClientConn) writeOK(r *mysql.Result) error {
 	data = append(data, mysql.PutLengthEncodedInt(r.AffectedRows)...)
 	data = append(data, mysql.PutLengthEncodedInt(r.InsertId)...)
 
-	if c.capability&mysql.CLIENT_PROTOCOL_41 > 0 {
+	if c.Capability&mysql.CLIENT_PROTOCOL_41 > 0 {
 		data = append(data, byte(r.Status), byte(r.Status>>8))
 		data = append(data, 0, 0)
 	}
 
-	return c.writePacket(data)
+	return c.WritePacket(data)
 }
 
 func (c *ClientConn) writeError(e error) error {
@@ -437,33 +425,33 @@ func (c *ClientConn) writeError(e error) error {
 	data = append(data, mysql.ERR_HEADER)
 	data = append(data, byte(m.Code), byte(m.Code>>8))
 
-	if c.capability&mysql.CLIENT_PROTOCOL_41 > 0 {
+	if c.Capability&mysql.CLIENT_PROTOCOL_41 > 0 {
 		data = append(data, '#')
 		data = append(data, m.State...)
 	}
 
 	data = append(data, m.Message...)
 
-	return c.writePacket(data)
+	return c.WritePacket(data)
 }
 
 func (c *ClientConn) writeEOF(status uint16) error {
 	data := make([]byte, 4, 9)
 
 	data = append(data, mysql.EOF_HEADER)
-	if c.capability&mysql.CLIENT_PROTOCOL_41 > 0 {
+	if c.Capability&mysql.CLIENT_PROTOCOL_41 > 0 {
 		data = append(data, 0, 0)
 		data = append(data, byte(status), byte(status>>8))
 	}
 
-	return c.writePacket(data)
+	return c.WritePacket(data)
 }
 
 func (c *ClientConn) writeEOFBatch(total []byte, status uint16, direct bool) ([]byte, error) {
 	data := make([]byte, 4, 9)
 
 	data = append(data, mysql.EOF_HEADER)
-	if c.capability&mysql.CLIENT_PROTOCOL_41 > 0 {
+	if c.Capability&mysql.CLIENT_PROTOCOL_41 > 0 {
 		data = append(data, 0, 0)
 		data = append(data, byte(status), byte(status>>8))
 	}
@@ -481,4 +469,11 @@ func (c *ClientConn) reloadConfig() error {
 	c.nodes = c.proxy.nodes
 
 	return nil
+}
+
+// refreshUser set username and pwd
+func (c *ClientConn) refreshUser(username string) {
+	c.user = username
+	pwd := c.proxy.users[c.user]
+	c.Pkg.SetUserAndPwd(username, pwd)
 }

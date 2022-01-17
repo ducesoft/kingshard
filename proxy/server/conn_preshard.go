@@ -55,7 +55,7 @@ func (c *ClientConn) preHandleShard(sql string) (bool, error) {
 	if c.proxy.blacklistSqls[c.proxy.blacklistSqlsIndex].sqlsLen != 0 {
 		if c.isBlacklistSql(sql) {
 			golog.OutputSql("Forbidden", "%s->%s:%s",
-				c.c.RemoteAddr(),
+				c.C.RemoteAddr(),
 				c.proxy.addr,
 				sql,
 			)

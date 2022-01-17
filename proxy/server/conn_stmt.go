@@ -279,7 +279,7 @@ func (c *ClientConn) handlePrepareSelect(stmt *sqlparser.Select, sql string, arg
 	var rs []*mysql.Result
 	rs, err = c.executeInNode(conn, sql, args)
 	if err != nil {
-		golog.Error("ClientConn", "handlePrepareSelect", err.Error(), c.connectionId)
+		golog.Error("ClientConn", "handlePrepareSelect", err.Error(), c.ConnectionId)
 		return err
 	}
 
@@ -317,7 +317,7 @@ func (c *ClientConn) handlePrepareExec(stmt sqlparser.Statement, sql string, arg
 	c.closeConn(conn, false)
 
 	if err != nil {
-		golog.Error("ClientConn", "handlePrepareExec", err.Error(), c.connectionId)
+		golog.Error("ClientConn", "handlePrepareExec", err.Error(), c.ConnectionId)
 		return err
 	}
 

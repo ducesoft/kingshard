@@ -47,7 +47,7 @@ func (c *ClientConn) handleSet(stmt *sqlparser.Set, sql string) (err error) {
 			c.proxy.counter.IncrSlowLogTotal()
 			golog.OutputSql(state, "%.1fms - %s->%s:%s",
 				execTime,
-				c.c.RemoteAddr(),
+				c.C.RemoteAddr(),
 				c.proxy.addr,
 				sql,
 			)
@@ -70,7 +70,7 @@ func (c *ClientConn) handleSet(stmt *sqlparser.Set, sql string) (err error) {
 		return c.handleSetNames(stmt.Exprs[0].Expr, nil)
 	default:
 		golog.Error("ClientConn", "handleSet", "command not supported",
-			c.connectionId, "sql", sql)
+			c.ConnectionId, "sql", sql)
 		return c.writeOK(nil)
 	}
 }

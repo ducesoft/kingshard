@@ -116,7 +116,7 @@ func (c *ClientConn) handleNodeCmd(rows sqlparser.InsertRows) error {
 	default:
 		err = errors.ErrCmdUnsupport
 		golog.Error("ClientConn", "handleNodeCmd", err.Error(),
-			c.connectionId, "opt", opt)
+			c.ConnectionId, "opt", opt)
 	}
 	return err
 }
@@ -159,7 +159,7 @@ func (c *ClientConn) handleServerCmd(rows sqlparser.InsertRows) (*mysql.Resultse
 	default:
 		err = errors.ErrCmdUnsupport
 		golog.Error("ClientConn", "handleNodeCmd", err.Error(),
-			c.connectionId, "opt", opt)
+			c.ConnectionId, "opt", opt)
 	}
 	if err != nil {
 		return nil, err
@@ -311,7 +311,7 @@ func (c *ClientConn) handleAdmin(admin *sqlparser.Admin) error {
 
 	if err != nil {
 		golog.Error("ClientConn", "handleAdmin", err.Error(),
-			c.connectionId, "sql", sqlparser.String(admin))
+			c.ConnectionId, "sql", sqlparser.String(admin))
 		return err
 	}
 
@@ -463,8 +463,8 @@ func (c *ClientConn) handleShowNodeConfig() (*mysql.Resultset, error) {
 	//var nodeRows [][]string
 	for name, node := range c.schema.nodes {
 		//"master"
-		idleConns,cacheConns,pushConnCount,popConnCount := node.Master.ConnCount()
-		
+		idleConns, cacheConns, pushConnCount, popConnCount := node.Master.ConnCount()
+
 		rows = append(
 			rows,
 			[]string{
@@ -482,7 +482,7 @@ func (c *ClientConn) handleShowNodeConfig() (*mysql.Resultset, error) {
 		//"slave"
 		for _, slave := range node.Slave {
 			if slave != nil {
-				idleConns,cacheConns,pushConnCount,popConnCount := slave.ConnCount()
+				idleConns, cacheConns, pushConnCount, popConnCount := slave.ConnCount()
 
 				rows = append(
 					rows,

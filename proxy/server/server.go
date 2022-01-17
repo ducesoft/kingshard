@@ -322,7 +322,7 @@ func (s *Server) newClientConn(co net.Conn) *ClientConn {
 	// meaning that data is sent as soon as possible after a Write.
 	//I set this option false.
 	tcpConn.SetNoDelay(false)
-	c.c = tcpConn
+	c.C = tcpConn
 
 	func() {
 		s.configUpdateMutex.RLock()
@@ -332,30 +332,15 @@ func (s *Server) newClientConn(co net.Conn) *ClientConn {
 		c.configVer = s.configVer
 	}()
 
-	// copy config
-	// FIXME fill config
-	cc := &mysql.ConnConfig{
-		Username:                c.user,
-		Password:                c.proxy.users[c.user],
-		Pubkey:                  nil,
-		AllowAllFiles:           false,
-		AllowCleartextPasswords: false,
-		AllowNativePasswords:    true,
-		AllowOldPasswords:       false,
-		EnableTls:               false,
-	}
-	c.pkg = mysql.NewPacketIO(tcpConn, cc)
 	c.proxy = s
 
-	c.capability = DEFAULT_CAPABILITY
+	c.Capability = DEFAULT_CAPABILITY
 
-	c.pkg.Sequence = 0
-
-	c.connectionId = atomic.AddUint32(&baseConnId, 1)
+	c.ConnectionId = atomic.AddUint32(&baseConnId, 1)
 
 	c.status = mysql.SERVER_STATUS_AUTOCOMMIT
 
-	c.salt, _ = mysql.RandomBuf(20)
+	c.Salt, _ = mysql.RandomBuf(20)
 
 	c.txConns = make(map[*backend.Node]*backend.BackendConn)
 
@@ -366,6 +351,21 @@ func (s *Server) newClientConn(co net.Conn) *ClientConn {
 
 	c.stmtId = 0
 	c.stmts = make(map[uint32]*Stmt)
+
+	// copy config
+	// FIXME fill config
+	cc := &mysql.ConnConfig{
+		//Username:                c.user, // refresh after client handshake
+		//Password:                c.proxy.users[c.user],
+		Pubkey:                  nil,
+		AllowAllFiles:           false,
+		AllowCleartextPasswords: false,
+		AllowNativePasswords:    true,
+		AllowOldPasswords:       false,
+		EnableTls:               false,
+	}
+	c.Pkg = mysql.NewPacketIO(tcpConn, cc)
+	c.Pkg.Sequence = 0
 
 	return c
 }

@@ -214,7 +214,7 @@ func (c *ClientConn) executeInNode(conn *backend.BackendConn, sql string, args [
 		c.proxy.counter.IncrSlowLogTotal()
 		golog.OutputSql(state, "%.1fms - %s->%s:%s",
 			execTime,
-			c.c.RemoteAddr(),
+			c.C.RemoteAddr(),
 			conn.GetAddr(),
 			sql,
 		)
@@ -229,7 +229,7 @@ func (c *ClientConn) executeInNode(conn *backend.BackendConn, sql string, args [
 
 func (c *ClientConn) executeInMultiNodes(conns map[string]*backend.BackendConn, sqls map[string][]string, args []interface{}) ([]*mysql.Result, error) {
 	if len(conns) != len(sqls) {
-		golog.Error("ClientConn", "executeInMultiNodes", errors.ErrConnNotEqual.Error(), c.connectionId,
+		golog.Error("ClientConn", "executeInMultiNodes", errors.ErrConnNotEqual.Error(), c.ConnectionId,
 			"conns", conns,
 			"sqls", sqls,
 		)
@@ -269,7 +269,7 @@ func (c *ClientConn) executeInMultiNodes(conns map[string]*backend.BackendConn, 
 				c.proxy.counter.IncrSlowLogTotal()
 				golog.OutputSql(state, "%.1fms - %s->%s:%s",
 					execTime,
-					c.c.RemoteAddr(),
+					c.C.RemoteAddr(),
 					co.GetAddr(),
 					v,
 				)
@@ -361,7 +361,7 @@ func (c *ClientConn) handleExec(stmt sqlparser.Statement, args []interface{}) er
 	conns, err := c.getShardConns(false, plan)
 	defer c.closeShardConns(conns, err != nil)
 	if err != nil {
-		golog.Error("ClientConn", "handleExec", err.Error(), c.connectionId)
+		golog.Error("ClientConn", "handleExec", err.Error(), c.ConnectionId)
 		return err
 	}
 	if conns == nil {

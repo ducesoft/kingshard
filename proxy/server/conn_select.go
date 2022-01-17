@@ -111,7 +111,7 @@ func (c *ClientConn) handleSelect(stmt *sqlparser.Select, args []interface{}) er
 
 	conns, err := c.getShardConns(fromSlave, plan)
 	if err != nil {
-		golog.Error("ClientConn", "handleSelect", err.Error(), c.connectionId)
+		golog.Error("ClientConn", "handleSelect", err.Error(), c.ConnectionId)
 		return err
 	}
 	if conns == nil {
@@ -123,13 +123,13 @@ func (c *ClientConn) handleSelect(stmt *sqlparser.Select, args []interface{}) er
 	rs, err = c.executeInMultiNodes(conns, plan.RewrittenSqls, args)
 	c.closeShardConns(conns, false)
 	if err != nil {
-		golog.Error("ClientConn", "handleSelect", err.Error(), c.connectionId)
+		golog.Error("ClientConn", "handleSelect", err.Error(), c.ConnectionId)
 		return err
 	}
 
 	err = c.mergeSelectResult(rs, stmt)
 	if err != nil {
-		golog.Error("ClientConn", "handleSelect", err.Error(), c.connectionId)
+		golog.Error("ClientConn", "handleSelect", err.Error(), c.ConnectionId)
 	}
 
 	return err
